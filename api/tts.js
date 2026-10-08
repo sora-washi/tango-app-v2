@@ -16,6 +16,7 @@ export default async function handler(req, res) {
     // GOOGLE_TTS_API_KEY があればGoogle Cloud TTS、なければGeminiのTTS（GEMINI_API_KEY）を使う
     const audio = process.env.GOOGLE_TTS_API_KEY ? await cloudTts(text, lang) : await geminiTts(text, lang);
     res.setHeader('Content-Type', audio.type);
+    res.setHeader('X-TTS-Engine', process.env.GOOGLE_TTS_API_KEY ? 'google-cloud' : 'gemini');
     // 同じ単語は全ユーザーで1回だけ生成すれば済むように、CDNとブラウザに長期キャッシュさせる
     res.setHeader('Cache-Control', 'public, max-age=31536000, s-maxage=31536000, immutable');
     return res.status(200).send(audio.buffer);
