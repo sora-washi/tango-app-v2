@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AI単語帳アプリ - 意味を自動生成＆スワイプでサクサク暗記</title>
+<meta name="description" content="専門用語や英単語の意味をAIが自動生成・添削。Tinder風のスワイプ操作で苦手な単語だけを効率よく復習できる、無料の最強単語帳Webアプリです。">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: { extend: {} }
+  }
+</script>
+<style>
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; transition: background-color 0.3s, color 0.3s; padding-bottom: 90px; -webkit-tap-highlight-color: transparent; }
+  
+  /* スマホで押しやすい巨大カードとアニメーション */
+  .card-container { perspective: 1000px; width: 100%; position: relative; margin-bottom: 20px; }
+  .card { width: 100%; height: 100%; position: absolute; transform-style: preserve-3d; transition: transform 0.4s cubic-bezier(0.4, 0.2, 0.2, 1); cursor: pointer; border-radius: 1.25rem; box-shadow: 0 10px 30px rgba(0,0,0,0.12); }
+  .card.flipped { transform: rotateY(180deg); }
+  .card-face { position: absolute; width: 100%; height: 100%; backface-visibility: hidden; display: flex; flex-direction: column; justify-content: center; align-items: center; border-radius: 1.25rem; padding: 24px; text-align: center; overflow: hidden; }
+  .card-front { background: white; border: 2px solid #e5e7eb; }
+  .card-back { background: #f8fafc; border: 2px solid #cbd5e1; transform: rotateY(180deg); }
+  
+  .dark .card-front { background: #1f2937; border-color: #374151; color: white; }
+  .dark .card-back { background: #111827; border-color: #374151; color: #60a5fa; }
+  
+  .swipe-right { transform: translateX(120vw) rotate(20deg) !important; opacity: 0; transition: all 0.35s ease-out; }
+  .swipe-left { transform: translateX(-120vw) rotate(-20deg) !important; opacity: 0; transition: all 0.35s ease-out; }
+</style>
+</head>
+<body class="bg-gray-100 text-gray-900 dark:bg-gray-950 dark:text-gray-100 min-h-screen">
+
+<div class="w-full max-w-md md:max-w-3xl mx-auto relative h-full min-h-screen flex flex-col shadow-2xl bg-gray-50 dark:bg-gray-900">
+  <header class="bg-blue-600 dark:bg-blue-800 text-white text-center py-4 font-bold text-xl md:text-2xl shadow-md z-10 sticky top-0">
+    <span id="headerTitle">AI単語帳</span>
+  </header>
+
+  <div id="mainContent" class="p-4 flex-1">
+    
+    <!-- フォルダー一覧画面 -->
+    <div id="folderScreen">
+      <h2 class="text-xl md:text-2xl font-bold mb-3 border-b pb-2 dark:border-gray-700">フォルダー</h2>
+      <div id="folderList" class="space-y-3 mb-6"></div>
+      
+      <button onclick="createNewFolder()" class="w-full bg-white dark:bg-gray-800 text-blue-600 font-bold py-4 rounded-xl border-2 border-blue-600 hover:bg-blue-50 transition shadow-sm mb-4 text-base">
+        ＋ 新しいフォルダーを作成
+      </button>
+
+      <h2 class="text-xl md:text-2xl font-bold mb-3 border-b pb-2 dark:border-gray-700 text-red-500">復習</h2>
+      <button onclick="startWeakTest()" class="w-full bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 font-bold py-4 rounded-xl border-2 border-red-200 dark:border-red-900 hover:bg-red-100 transition shadow-sm flex items-center justify-center gap-2 text-base">
+        ⚠️ 苦手な単語を再テスト (<span id="weakCount">0</span>)
+      </button>
+    </div>
+
+    <!-- 単語登録・編集画面 -->
+    <div id="editScreen" class="hidden">
+      <div class="flex justify-between items-center mb-3">
+        <h2 id="editFolderTitle" class="text-xl md:text-2xl font-bold"></h2>
+        <select id="folderLang" onchange="saveFolderLang()" class="bg-white dark:bg-gray-800 border rounded-lg p-2 text-sm outline-none font-medium">
+          <option value="en-US">🗣️ 読上: 英語</option>
+          <option value="ja-JP">🗣️ 読上: 日本語</option>
+        </select>
+      </div>
+
+      <div class="flex gap-2 mb-3 p-1 bg-gray-200 dark:bg-gray-800 rounded-xl">
+        <button id="modeManual" onclick="setAiMode('manual')" class="flex-1 py-3 text-sm font-bold rounded-lg bg-white dark:bg-gray-700 shadow text-blue-600 dark:text-blue-400 transition">📝 単語＋意味</button>
+        <button id="modeAuto" onclick="setAiMode('auto')" class="flex-1 py-3 text-sm font-bold rounded-lg text-gray-500 transition">✨ AIおまかせ</button>
+      </div>
+
+      <p id="editDesc" class="text-sm text-gray-500 mb-2">単語と意味をスペースか改行で区切って入力。</p>
+      
+      <textarea id="wordInput" class="w-full h-56 md:h-80 p-4 text-base md:text-lg border rounded-xl bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none resize-none mb-4 shadow-inner"></textarea>
+      
+      <div class="flex gap-2">
+        <button onclick="processWords()" class="flex-1 bg-blue-600 text-white font-bold py-4 rounded-xl hover:bg-blue-700 transition text-base shadow">
+          AIチェック・登録
+        </button>
+        <button onclick="showScreen('folder')" class="px-5 bg-gray-300 dark:bg-gray-700 text-gray-700 dark:text-gray-200 font-bold py-4 rounded-xl">戻る</button>
+      </div>
+    </div>
+
+    <!-- AI確認画面 -->
+    <div id="validationScreen" class="hidden">
+      <h2 class="text-xl font-bold mb-1 text-blue-600">AI チェック結果</h2>
+      <p class="text-xs text-gray-500 mb-3">確認して保存してください。</p>
+      <div id="validationList" class="space-y-3 mb-4 max-h-[60vh] overflow-y-auto pr-1"></div>
+      <div class="flex gap-2">
+        <button onclick="saveValidatedWords()" class="flex-1 bg-green-600 text-white font-bold py-4 rounded-xl hover:bg-green-700 transition text-base shadow">この内容で登録</button>
+        <button onclick="showScreen('edit')" class="px-5 bg-gray-300 dark:bg-gray-700 text-gray-700 dark:text-gray-200 font-bold py-4 rounded-xl">戻る</button>
+      </div>
+    </div>
+
+    <!-- テスト設定画面 -->
+    <div id="testSettingScreen" class="hidden pt-2">
+      <h2 id="testFolderTitle" class="text-xl md:text-3xl font-bold mb-4 text-center"></h2>
+      
+      <div class="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm mb-5">
+        <h3 class="font-bold mb-3 border-b dark:border-gray-700 pb-1 text-sm text-gray-500">出題の向き</h3>
+        <div class="flex gap-2 mb-5">
+          <label class="flex-1 text-center p-3 border-2 rounded-xl cursor-pointer bg-blue-50 dark:bg-blue-950/40 border-blue-500">
+            <input type="radio" name="testDirection" value="forward" checked class="hidden">
+            <div class="font-bold text-blue-700 dark:text-blue-300 text-base">順引き</div>
+            <div class="text-xs text-gray-500">単語 → 意味</div>
+          </label>
+          <label class="flex-1 text-center p-3 border-2 rounded-xl cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50 border-gray-200 dark:border-gray-700">
+            <input type="radio" name="testDirection" value="reverse" class="hidden">
+            <div class="font-bold text-gray-700 dark:text-gray-300 text-base">逆引き</div>
+            <div class="text-xs text-gray-500">意味 → 単語</div>
+          </label>
+        </div>
+
+        <h3 class="font-bold mb-3 border-b dark:border-gray-700 pb-1 text-sm text-gray-500">出題数</h3>
+        <div class="flex gap-2">
+          <button onclick="startTest(10)" class="flex-1 py-4 bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 font-bold rounded-xl text-base">10問</button>
+          <button onclick="startTest(20)" class="flex-1 py-4 bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 font-bold rounded-xl text-base">20問</button>
+          <button onclick="startTest('all')" class="flex-1 py-4 bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 font-bold rounded-xl text-base">すべて</button>
+        </div>
+      </div>
+      <button onclick="showScreen('folder')" class="w-full bg-gray-300 dark:bg-gray-700 text-gray-700 dark:text-gray-200 font-bold py-4 rounded-xl text-base">やめる</button>
+    </div>
+
+    <!-- テスト実行画面（スマホでカードが大きく見やすいレイアウト） -->
+    <div id="testScreen" class="hidden h-full flex flex-col pt-1">
+      <div class="flex justify-between items-center mb-2 px-1">
+        <button onclick="showScreen('folder')" class="text-gray-500 font-bold text-sm px-2 py-1">✕ 中断</button>
+        <div class="font-bold text-gray-600 dark:text-gray-300 text-base" id="progressText">1 / 10</div>
+        <button onclick="speakCurrentWord()" class="text-3xl p-1">🔊</button>
+      </div>
+
+      <!-- スマホでも文字が大きく見やすいカードエリア -->
+      <div class="card-container flex-1 h-72 md:h-[400px] mt-2" id="cardContainer">
+        <div class="card" id="flashcard" onclick="flipCard()">
+          <div class="card-face card-front">
+            <div class="text-xs text-gray-400 mb-3 tracking-widest">タップして答えを見る</div>
+            <div id="cardQ" class="text-3xl md:text-6xl font-extrabold break-words max-w-full px-2">Question</div>
+          </div>
+          <div class="card-face card-back">
+            <div id="cardA" class="text-2xl md:text-5xl font-bold text-blue-600 dark:text-blue-400 break-words max-w-full px-2">Answer</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- スマホで押しやすい巨大な正誤ボタン -->
+      <div class="flex gap-3 mt-4 mb-2 px-1 opacity-0 transition-opacity duration-300" id="judgementBtns">
+        <button onclick="judgeWord(false)" class="flex-1 bg-red-50 dark:bg-red-950/50 border-2 border-red-400 text-red-600 dark:text-red-400 font-bold py-4 text-base md:text-xl rounded-2xl shadow hover:bg-red-100 transition active:scale-95">
+          ✕ 分からない
+        </button>
+        <button onclick="judgeWord(true)" class="flex-1 bg-green-50 dark:bg-green-950/50 border-2 border-green-500 text-green-600 dark:text-green-400 font-bold py-4 text-base md:text-xl rounded-2xl shadow hover:bg-green-100 transition active:scale-95">
+          〇 覚えた
+        </button>
+      </div>
+
+      <!-- 広告スペース -->
+      <div id="ad-space" class="w-full bg-gray-200 dark:bg-gray-800 text-center py-3 text-gray-400 text-xs rounded-xl hidden mt-2">
+        スポンサーリンク
+      </div>
+    </div>
+
+    <!-- 設定画面 -->
+    <div id="settingsScreen" class="hidden">
+      <h2 class="text-xl md:text-2xl font-bold mb-4 border-b pb-2 dark:border-gray-700">設定</h2>
+      <div class="space-y-4">
+        <div class="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm flex justify-between items-center">
+          <span class="font-bold text-base">🌙 ダークモード</span>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="darkModeToggle" class="sr-only peer" onchange="toggleDarkMode()">
+            <div class="w-12 h-7 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-blue-600"></div>
+          </label>
+        </div>
+        <div class="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm">
+          <h3 class="font-bold text-base mb-3">💾 バックアップと復元</h3>
+          <div class="flex gap-3">
+            <button onclick="exportData()" class="flex-1 bg-green-600 text-white font-bold py-3 rounded-xl shadow text-sm">エクスポート</button>
+            <label class="flex-1 bg-amber-600 text-white font-bold py-3 rounded-xl shadow text-center cursor-pointer text-sm">
+              インポート
+              <input type="file" id="importFile" accept=".json" class="hidden" onchange="importData(event)">
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ボトムナビゲーション -->
+  <nav class="fixed bottom-0 w-full max-w-md md:max-w-3xl bg-white dark:bg-gray-800 border-t flex justify-around p-2 pb-5 z-10 shadow-lg" id="bottomNav">
+    <button onclick="showScreen('folder')" class="flex flex-col items-center p-2 text-blue-600 dark:text-blue-400">
+      <span class="text-2xl">📁</span><span class="text-xs font-bold mt-0.5">フォルダー</span>
+    </button>
+    <button onclick="showScreen('settings')" class="flex flex-col items-center p-2 text-gray-400 hover:text-blue-600">
+      <span class="text-2xl">⚙️</span><span class="text-xs font-bold mt-0.5">設定</span>
+    </button>
+  </nav>
+
+  <div id="loadingOverlay" class="hidden absolute inset-0 bg-white/90 dark:bg-gray-900/90 flex flex-col items-center justify-center z-50">
+    <div class="animate-spin rounded-full h-12 w-12 border-t-4 border-blue-500 mb-4"></div>
+    <p class="font-bold text-gray-700 dark:text-gray-200">AIが処理中...</p>
+  </div>
+</div>
+
+<script>
+  let appData = JSON.parse(localStorage.getItem('ultimateFlashcards')) || {
+    folders: [{ id: 1, name: "基本の英単語", lang: "en-US", words: [{ id: 1, q: "apple", a: "りんご", weak: false }] }],
+    settings: { darkMode: false }
+  };
+  let currentFolderId = null; let aiMode = 'manual'; let testQueue = []; let currentTestIndex = 0; let testConfig = { direction: 'forward' }; let tempValidatedWords = [];
+
+  function init() {
+    if (appData.settings.darkMode) { document.documentElement.classList.add('dark'); document.getElementById('darkModeToggle').checked = true; }
+    document.querySelectorAll('input[name="testDirection"]').forEach(radio => {
+      radio.addEventListener('change', (e) => {
+        document.querySelectorAll('input[name="testDirection"]').forEach(r => {
+          r.parentElement.classList.remove('bg-blue-50', 'border-blue-500', 'dark:bg-blue-950/40'); r.parentElement.querySelector('.font-bold').classList.remove('text-blue-700', 'dark:text-blue-300');
+        });
+        if(e.target.checked) { e.target.parentElement.classList.add('bg-blue-50', 'border-blue-500', 'dark:bg-blue-950/40'); e.target.parentElement.querySelector('.font-bold').classList.add('text-blue-700', 'dark:text-blue-300'); }
+      });
+    });
+    setupSwipe(); showScreen('folder');
+  }
+
+  function saveData() { localStorage.setItem('ultimateFlashcards', JSON.stringify(appData)); updateWeakCount(); }
+  function updateWeakCount() { let count = 0; appData.folders.forEach(f => f.words.forEach(w => { if(w.weak) count++; })); document.getElementById('weakCount').innerText = count; }
+
+  function showScreen(screen) {
+    ['folderScreen', 'editScreen', 'validationScreen', 'testSettingScreen', 'testScreen', 'settingsScreen'].forEach(s => document.getElementById(s).classList.add('hidden'));
+    const bottomNav = document.getElementById('bottomNav');
+    if (screen === 'test' || screen === 'edit' || screen === 'validation' || screen === 'testSetting') bottomNav.classList.add('hidden');
+    else bottomNav.classList.remove('hidden');
+    if (screen === 'folder') { document.getElementById('headerTitle').innerText = "AI単語帳"; renderFolderList(); updateWeakCount(); }
+    if (screen === 'settings') { document.getElementById('headerTitle').innerText = "設定"; }
+    document.getElementById(screen + 'Screen').classList.remove('hidden');
+  }
+
+  function renderFolderList() {
+    const list = document.getElementById('folderList'); list.innerHTML = '';
+    appData.folders.forEach(f => {
+      const div = document.createElement('div'); div.className = "bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border dark:border-gray-700 flex justify-between items-center cursor-pointer";
+      div.innerHTML = `<div class="flex-1" onclick="openTestSetting(${f.id})"><h3 class="font-bold text-lg">${f.name}</h3><p class="text-xs text-gray-500 mt-0.5">${f.words.length} 単語 | 🗣️ ${f.lang === 'en-US' ? '英語' : '日本語'}</p></div><div class="flex gap-2"><button onclick="openEdit(${f.id}); event.stopPropagation();" class="bg-gray-100 dark:bg-gray-700 px-3 py-2 rounded-lg font-bold text-sm hover:bg-gray-200">編集</button><button onclick="deleteFolder(${f.id}); event.stopPropagation();" class="text-red-400 p-2">✕</button></div>`;
+      list.appendChild(div);
+    });
+  }
+
+  function createNewFolder() { const name = prompt("新しいフォルダー名を入力"); if (name) { appData.folders.push({ id: Date.now(), name: name, lang: "en-US", words: [] }); saveData(); renderFolderList(); } }
+  function deleteFolder(id) { if(confirm("削除しますか？")) { appData.folders = appData.folders.filter(f => f.id !== id); saveData(); renderFolderList(); } }
+
+  function openEdit(id) { currentFolderId = id; const folder = appData.folders.find(f => f.id === id); document.getElementById('editFolderTitle').innerText = folder.name; document.getElementById('folderLang').value = folder.lang || "en-US"; document.getElementById('wordInput').value = folder.words.map(w => `${w.q} ${w.a}`).join('\n'); setAiMode('manual'); showScreen('edit'); }
+  function saveFolderLang() { const folder = appData.folders.find(f => f.id === currentFolderId); if(folder) { folder.lang = document.getElementById('folderLang').value; saveData(); } }
+
+  function setAiMode(mode) {
+    aiMode = mode;
+    document.getElementById('modeManual').className = mode === 'manual' ? "flex-1 py-3 text-sm font-bold rounded-lg bg-white dark:bg-gray-700 shadow text-blue-600 dark:text-blue-400 transition" : "flex-1 py-3 text-sm font-bold rounded-lg text-gray-500 transition";
+    document.getElementById('modeAuto').className = mode === 'auto' ? "flex-1 py-3 text-sm font-bold rounded-lg bg-white dark:bg-gray-700 shadow text-purple-600 dark:text-purple-400 transition" : "flex-1 py-3 text-sm font-bold rounded-lg text-gray-500 transition";
+    document.getElementById('editDesc').innerText = mode === 'manual' ? "単語と意味を区切って入力（AIが添削します）" : "単語のみを入力（AIが自動で意味を生成します）";
+  }
+
+  async function processWords() {
+    const text = document.getElementById('wordInput').value.trim();
+    if (!text) return;
+    document.getElementById('loadingOverlay').classList.remove('hidden');
+
+    try {
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text, aiMode: aiMode })
+      });
+      const data = await response.json();
+      if(data.error) throw new Error(data.error);
+      
+      tempValidatedWords = data.result;
+      document.getElementById('loadingOverlay').classList.add('hidden');
+      renderValidation();
+    } catch (e) {
+      document.getElementById('loadingOverlay').classList.add('hidden');
+      alert("通信エラー: " + e.message + "\nそのまま保存します。");
+      saveRawWords(text);
+    }
+  }
+
+  function saveRawWords(text) {
+    const folder = appData.folders.find(f => f.id === currentFolderId);
+    folder.words = text.split('\n').filter(l=>l.trim()).map((line, i) => { const parts = line.split(/[\s,，、\t]+/); return { id: Date.now()+i, q: parts[0], a: parts.slice(1).join(' ') || "(未入力)", weak: false }; });
+    saveData(); showScreen('folder');
+  }
+
+  function renderValidation() {
+    const list = document.getElementById('validationList'); list.innerHTML = '';
+    tempValidatedWords.forEach((item, idx) => {
+      const div = document.createElement('div');
+      if(aiMode === 'auto') {
+        div.className = "p-3 rounded-xl border dark:border-gray-700 bg-white dark:bg-gray-800";
+        div.innerHTML = `<div class="font-bold text-xs text-gray-400 mb-1">自動生成</div><div class="flex gap-2"><input type="text" id="val_q_${idx}" value="${item.q}" class="w-1/2 p-2 border dark:border-gray-700 dark:bg-gray-900 rounded-lg text-base"><input type="text" id="val_a_${idx}" value="${item.a}" class="w-1/2 p-2 border dark:border-gray-700 dark:bg-gray-900 rounded-lg text-base"></div>`;
+      } else {
+        div.className = `p-3 rounded-xl border ${item.isCorrect ? 'bg-green-50/50 dark:bg-green-950/20 border-green-200 dark:border-green-900' : 'bg-red-50/50 dark:bg-red-950/20 border-red-300 dark:border-red-900'}`;
+        div.innerHTML = `<div class="font-bold text-xs mb-1 ${item.isCorrect ? 'text-green-600' : 'text-red-600'}">${item.isCorrect ? '✅ OK' : '⚠️ 修正案: ' + item.suggestion}</div><div class="flex gap-2"><input type="text" id="val_q_${idx}" value="${item.q}" class="w-1/2 p-2 border dark:border-gray-700 dark:bg-gray-900 rounded-lg text-base" readonly><input type="text" id="val_a_${idx}" value="${item.isCorrect ? item.a : item.suggestion}" class="w-1/2 p-2 border dark:border-gray-700 dark:bg-gray-900 rounded-lg text-base"></div>`;
+      }
+      list.appendChild(div);
+    });
+    showScreen('validation');
+  }
+
+  function saveValidatedWords() {
+    const folder = appData.folders.find(f => f.id === currentFolderId);
+    folder.words = tempValidatedWords.map((item, idx) => ({ id: Date.now() + idx, q: document.getElementById(`val_q_${idx}`).value, a: document.getElementById(`val_a_${idx}`).value, weak: false }));
+    saveData(); showScreen('folder');
+  }
+
+  function openTestSetting(id) { currentFolderId = id; const folder = appData.folders.find(f => f.id === id); if(folder.words.length === 0) return alert("単語がありません"); document.getElementById('testFolderTitle').innerText = folder.name; showScreen('testSetting'); }
+  
+  function startWeakTest() {
+    let weakWords = []; appData.folders.forEach(f => f.words.forEach(w => { if(w.weak) weakWords.push({ ...w, _folderLang: f.lang }); }));
+    if(weakWords.length === 0) return alert("苦手な単語はありません！🎉");
+    testConfig.direction = document.querySelector('input[name="testDirection"]:checked').value; testQueue = weakWords.sort(() => Math.random() - 0.5); currentTestIndex = 0; showScreen('test'); showCard();
+  }
+
+  function startTest(count) {
+    testConfig.direction = document.querySelector('input[name="testDirection"]:checked').value; const folder = appData.folders.find(f => f.id === currentFolderId);
+    let all = [...folder.words].map(w => ({ ...w, _folderLang: folder.lang })); all.sort(() => Math.random() - 0.5); testQueue = count === 'all' ? all : all.slice(0, count); currentTestIndex = 0; showScreen('test'); showCard();
+  }
+
+  function showCard() {
+    if (currentTestIndex >= testQueue.length) { alert("テスト完了です！"); saveData(); showScreen('folder'); return; }
+    const card = document.getElementById('flashcard'); card.classList.remove('flipped', 'swipe-right', 'swipe-left'); card.style.transform = '';
+    document.getElementById('judgementBtns').classList.add('opacity-0'); document.getElementById('judgementBtns').classList.remove('opacity-100');
+    document.getElementById('ad-space').classList.add('hidden');
+
+    const word = testQueue[currentTestIndex];
+    document.getElementById('progressText').innerText = `${currentTestIndex + 1} / ${testQueue.length}`;
+    if (testConfig.direction === 'forward') { document.getElementById('cardQ').innerText = word.q; document.getElementById('cardA').innerText = word.a; } 
+    else { document.getElementById('cardQ').innerText = word.a; document.getElementById('cardA').innerText = word.q; }
+    speakCurrentWord(true);
+  }
+
+  function flipCard() {
+    const card = document.getElementById('flashcard');
+    if (!card.classList.contains('flipped')) {
+      card.classList.add('flipped');
+      document.getElementById('judgementBtns').classList.remove('opacity-0'); document.getElementById('judgementBtns').classList.add('opacity-100');
+      document.getElementById('ad-space').classList.remove('hidden');
+    }
+  }
+
+  function judgeWord(isRemembered) {
+    const card = document.getElementById('flashcard'); const currentWord = testQueue[currentTestIndex];
+    appData.folders.forEach(f => { let target = f.words.find(w => w.id === currentWord.id); if(target) target.weak = !isRemembered; });
+    card.classList.add(isRemembered ? 'swipe-right' : 'swipe-left');
+    setTimeout(() => { currentTestIndex++; showCard(); }, 350);
+  }
+
+  function setupSwipe() {
+    const card = document.getElementById('flashcard'); let startX = 0, currentX = 0;
+    card.addEventListener('touchstart', e => { if(!card.classList.contains('flipped')) return; startX = e.touches[0].clientX; card.style.transition = 'none'; });
+    card.addEventListener('touchmove', e => { if(!card.classList.contains('flipped')) return; currentX = e.touches[0].clientX - startX; card.style.transform = `rotateY(180deg) translateX(${-currentX}px) rotate(${currentX/20}deg)`; });
+    card.addEventListener('touchend', () => {
+      if(!card.classList.contains('flipped')) return; card.style.transition = 'transform 0.4s cubic-bezier(0.4, 0.2, 0.2, 1)';
+      if (currentX > 70) judgeWord(true); else if (currentX < -70) judgeWord(false); else card.style.transform = 'rotateY(180deg)'; currentX = 0;
+    });
+  }
+
+  function speakCurrentWord(auto = false) {
+    if (!window.speechSynthesis) return; const word = testQueue[currentTestIndex]; if(!word) return;
+    let textToSpeak = testConfig.direction === 'forward' ? word.q : word.a; let lang = testConfig.direction === 'forward' ? word._folderLang : "ja-JP";
+    window.speechSynthesis.cancel(); const msg = new SpeechSynthesisUtterance(textToSpeak); msg.lang = lang || 'en-US'; window.speechSynthesis.speak(msg);
+  }
+
+  function toggleDarkMode() { appData.settings.darkMode = document.getElementById('darkModeToggle').checked; if (appData.settings.darkMode) document.documentElement.classList.add('dark'); else document.documentElement.classList.remove('dark'); saveData(); }
+  function exportData() { const a = document.createElement('a'); a.href = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(appData)); a.download = "flashcard_backup.json"; a.click(); }
+  function importData(event) { const file = event.target.files[0]; if(!file) return; const reader = new FileReader(); reader.onload = (e) => { try { const imported = JSON.parse(e.target.result); if(imported.folders) { appData = imported; saveData(); init(); alert("復元完了！"); } } catch(err) { alert("無効なファイルです。"); } }; reader.readAsText(file); }
+
+  window.onload = init;
+</script>
+</body>
+</html>
