@@ -177,6 +177,27 @@
             <div class="w-11 h-6 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
           </label>
         </div>
+        <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm flex justify-between items-center">
+          <span class="font-bold">🔊 自動で読み上げ</span>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="autoSpeakToggle" class="sr-only peer" onchange="toggleAutoSpeak()">
+            <div class="w-11 h-6 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+          </label>
+        </div>
+        <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm">
+          <h3 class="font-bold mb-3">🗣️ 読み上げの声</h3>
+          <label class="block text-sm text-gray-500 mb-1">英語</label>
+          <div class="flex gap-2 mb-3">
+            <select id="voiceEn" onchange="saveVoice('en')" class="flex-1 min-w-0 bg-gray-100 dark:bg-gray-700 border rounded p-2 outline-none"></select>
+            <button onclick="previewVoice('en')" class="px-4 bg-blue-100 text-blue-700 font-bold rounded">試聴</button>
+          </div>
+          <label class="block text-sm text-gray-500 mb-1">日本語</label>
+          <div class="flex gap-2">
+            <select id="voiceJa" onchange="saveVoice('ja')" class="flex-1 min-w-0 bg-gray-100 dark:bg-gray-700 border rounded p-2 outline-none"></select>
+            <button onclick="previewVoice('ja')" class="px-4 bg-blue-100 text-blue-700 font-bold rounded">試聴</button>
+          </div>
+          <p class="text-xs text-gray-400 mt-3">「自動」は、この端末で一番高品質な声を選びます。声は端末の設定からダウンロードすると増やせます。</p>
+        </div>
         <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm">
           <h3 class="font-bold mb-3">💾 バックアップと復元</h3>
           <div class="flex gap-3">
@@ -222,6 +243,7 @@
         p.querySelector('.font-bold').classList.toggle('text-blue-700', on);
       });
     }));
+    $('autoSpeakToggle').checked = appData.settings.autoSpeak !== false;
     setupSwipe(); showScreen('folder');
   }
 
@@ -232,7 +254,7 @@
     ['folderScreen','editScreen','validationScreen','testSettingScreen','testScreen','settingsScreen'].forEach(s => $(s).classList.add('hidden'));
     $('bottomNav').classList.toggle('hidden', ['test','edit','validation','testSetting'].includes(screen));
     if (screen === 'folder') { $('headerTitle').innerText = "フォルダー"; renderFolderList(); updateWeakCount(); }
-    if (screen === 'settings') $('headerTitle').innerText = "設定";
+    if (screen === 'settings') { $('headerTitle').innerText = "設定"; loadVoices(); }
     $(screen + 'Screen').classList.remove('hidden');
     window.scrollTo(0, 0);
   }
@@ -418,13 +440,91 @@
     });
   }
 
-  function speakCurrentWord() {
-    if (!window.speechSynthesis) return; const w = testQueue[currentTestIndex]; if (!w) return;
-    const fwd = testConfig.direction === 'forward';
-    window.speechSynthesis.cancel();
-    const m = new SpeechSynthesisUtterance(fwd ? w.q : w.a); m.lang = fwd ? (w._folderLang || 'en-US') : 'ja-JP';
-    window.speechSynthesis.speak(m);
+  // ===== 音声読み上げ（iPhone対策・声の選択つき）=====
+  let voices = [], speakTimer = null, speechUnlocked = false;
+  const NOVELTY = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox)\b/i;
+  const normLang = v => v.lang.replace('_', '-').toLowerCase();
+
+  function loadVoices() {
+    voices = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+    populateVoiceSelects();
   }
+  if (window.speechSynthesis) { loadVoices(); speechSynthesis.addEventListener('voiceschanged', loadVoices); }
+
+  // 高品質な声ほど高得点（Premium / Enhanced / Siri を優先し、効果音系の変な声は避ける）
+  function voiceScore(v, lang) {
+    let sc = 0;
+    if (/premium|プレミアム/i.test(v.name)) sc += 6;
+    if (/enhanced|拡張|siri|高品質/i.test(v.name)) sc += 5;
+    if (normLang(v) === lang.toLowerCase()) sc += 2;
+    if (v.default) sc += 1;
+    if (NOVELTY.test(v.name)) sc -= 10;
+    return sc;
+  }
+  function voicesFor(base, lang) {
+    return voices.filter(v => normLang(v).startsWith(base))
+      .map(v => ({ v, sc: voiceScore(v, lang) })).sort((a, b) => b.sc - a.sc).map(x => x.v);
+  }
+
+  // 自分で選んだ声があればそれ、なければ自動（一番高品質な声）
+  function pickVoice(lang) {
+    const base = lang.slice(0, 2).toLowerCase();
+    const saved = (appData.settings.voice || {})[base];
+    if (saved) { const v = voices.find(x => x.voiceURI === saved); if (v) return v; }
+    return voicesFor(base, lang)[0] || null;
+  }
+
+  function populateVoiceSelects() {
+    [['en', 'voiceEn', 'en-US'], ['ja', 'voiceJa', 'ja-JP']].forEach(([base, id, lang]) => {
+      const sel = $(id); if (!sel) return;
+      const saved = (appData.settings.voice || {})[base] || '';
+      sel.innerHTML = '<option value="">自動（おすすめ）</option>' +
+        voicesFor(base, lang).map(v => `<option value="${esc(v.voiceURI)}">${esc(v.name)} (${esc(v.lang)})</option>`).join('');
+      sel.value = saved; if (sel.selectedIndex < 0) sel.value = '';
+    });
+  }
+  function saveVoice(base) {
+    const sel = $(base === 'en' ? 'voiceEn' : 'voiceJa');
+    appData.settings.voice = appData.settings.voice || {};
+    if (sel.value) appData.settings.voice[base] = sel.value; else delete appData.settings.voice[base];
+    saveData();
+  }
+  function previewVoice(base) {
+    speakText(base === 'en' ? 'Hello! This is a sample of the voice.' : 'こんにちは。これは声のサンプルです。', base === 'en' ? 'en-US' : 'ja-JP');
+  }
+
+  // iOSは最初の1回がユーザー操作の中でないと鳴らないので、初回タッチで無音の発話を流して解除する
+  function unlockSpeech() {
+    if (speechUnlocked || !window.speechSynthesis) return;
+    speechUnlocked = true;
+    const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u);
+  }
+  document.addEventListener('touchend', unlockSpeech, { once: true, passive: true });
+  document.addEventListener('click', unlockSpeech, { once: true });
+
+  function speakText(text, lang) {
+    if (!window.speechSynthesis || !text) return;
+    clearTimeout(speakTimer);
+    const go = () => {
+      if (!voices.length) loadVoices();
+      const m = new SpeechSynthesisUtterance(text);
+      const v = pickVoice(lang);
+      m.lang = v ? v.lang : lang; if (v) m.voice = v; // 速度は等倍
+      speechSynthesis.speak(m);
+    };
+    // 読み上げ中のときだけ止める。cancel直後のspeakはiOSで無視されるので少し待つ
+    if (speechSynthesis.speaking || speechSynthesis.pending) { speechSynthesis.cancel(); speakTimer = setTimeout(go, 150); }
+    else go();
+  }
+
+  function speakCurrentWord(auto) {
+    const w = testQueue[currentTestIndex]; if (!w) return;
+    if (auto === true && appData.settings.autoSpeak === false) return; // 自動再生OFFのとき
+    const fwd = testConfig.direction === 'forward';
+    speakText(fwd ? w.q : w.a, fwd ? (w._folderLang || 'en-US') : 'ja-JP');
+  }
+
+  function toggleAutoSpeak() { appData.settings.autoSpeak = $('autoSpeakToggle').checked; saveData(); }
 
   function toggleDarkMode() { appData.settings.darkMode = $('darkModeToggle').checked; document.documentElement.classList.toggle('dark', appData.settings.darkMode); saveData(); }
   function exportData() { const a = document.createElement('a'); a.href = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(appData)); a.download = "flashcard_backup.json"; a.click(); }
