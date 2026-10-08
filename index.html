@@ -147,6 +147,7 @@
         <div class="font-bold text-gray-500" id="progressText"></div>
         <button onclick="speakCurrentWord()" class="text-2xl px-2">🔊</button>
       </div>
+      <div id="engineBadge" class="text-center text-xs text-gray-400 min-h-[1rem]"></div>
       <div class="card-container" id="cardContainer">
         <div class="card" id="flashcard" onclick="flipCard()">
           <div class="card-face card-front">
@@ -191,6 +192,8 @@
             <option value="cloud">AI音声（高品質・ネット接続が必要）</option>
             <option value="device">端末の声</option>
           </select>
+          <button onclick="testCloudVoice()" class="mt-3 w-full bg-blue-100 text-blue-700 font-bold py-2 rounded">AI音声をテスト</button>
+          <p id="ttsTestResult" class="text-xs mt-2 break-words"></p>
           <p class="text-xs text-gray-400 mt-3">AI音声は、端末の設定を変えなくても自然な英語・日本語で読み上げます。うまく鳴らない時は自動で端末の声に切り替わります。</p>
         </div>
         <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm">
@@ -555,7 +558,7 @@
     if (audioCache.has(key)) return audioCache.get(key);
     try {
       const r = await fetch(`/api/tts?lang=${base}&text=${encodeURIComponent(text)}`);
-      if (!r.ok) throw new Error('tts ' + r.status);
+      if (!r.ok) { let m = 'HTTP ' + r.status; try { m += ' ' + (await r.json()).error; } catch (e) {} throw new Error(m); }
       const url = URL.createObjectURL(await r.blob());
       if (audioCache.size >= 100) { const k = audioCache.keys().next().value; URL.revokeObjectURL(audioCache.get(k)); audioCache.delete(k); }
       audioCache.set(key, url); cloudFails = 0;
@@ -577,12 +580,40 @@
     fetchAudioUrl(fwd ? n.q : n.a, lang.startsWith('ja') ? 'ja' : 'en').catch(() => {});
   }
 
+  // 設定画面の「AI音声をテスト」：サーバーの状態を画面に表示して、そのまま再生する
+  async function testCloudVoice() {
+    const out = $('ttsTestResult');
+    const show = (msg, ok) => { out.textContent = msg; out.className = 'text-xs mt-2 break-words ' + (ok ? 'text-green-600' : 'text-red-600'); };
+    out.textContent = '確認中…'; out.className = 'text-xs mt-2 break-words text-gray-500';
+    try {
+      const r = await fetch('/api/tts?lang=en&text=' + encodeURIComponent('Hello, this is a test.') + '&t=' + Date.now());
+      const type = r.headers.get('content-type') || '';
+      if (!r.ok || !type.startsWith('audio')) {
+        const raw = await r.text(); let msg = raw.slice(0, 150);
+        try { msg = JSON.parse(raw).error || msg; } catch (e) {}
+        return show(`失敗: HTTP ${r.status} ${msg}`, false);
+      }
+      const blob = await r.blob();
+      player.src = URL.createObjectURL(blob);
+      await player.play();
+      show(`成功: ${r.headers.get('x-tts-engine') || '?'} / ${Math.round(blob.size / 1024)}KB / ${type}（音が聞こえましたか？）`, true);
+    } catch (e) { show('失敗: ' + (e.message || e), false); }
+  }
+
+  function setBadge(t) { const b = $('engineBadge'); if (b) b.textContent = t; }
+
   function speakText(text, lang) {
     if (!text) return;
-    if (!useCloud()) { player.pause(); return speakDevice(text, lang); }
+    if (!useCloud()) {
+      player.pause();
+      setBadge(cloudFails >= 3 ? '端末の声（AI音声が3回失敗したので停止中）' : '端末の声');
+      return speakDevice(text, lang);
+    }
     clearTimeout(speakTimer);
     if (window.speechSynthesis) speechSynthesis.cancel();
-    speakCloud(text, lang.startsWith('ja') ? 'ja' : 'en').catch(() => speakDevice(text, lang)); // 失敗したら端末の声
+    speakCloud(text, lang.startsWith('ja') ? 'ja' : 'en')
+      .then(() => setBadge('AI音声'))
+      .catch(e => { setBadge(('端末の声（AI音声は失敗: ' + ((e && e.message) || e)).slice(0, 80) + '）'); speakDevice(text, lang); });
   }
 
   function speakCurrentWord(auto) {
