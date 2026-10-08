@@ -9,7 +9,8 @@ const GEMINI_TTS_MODELS = [process.env.GEMINI_TTS_MODEL, 'gemini-3.1-flash-tts-p
 
 export default async function handler(req, res) {
   const text = String(req.query.text || '').trim().slice(0, 200);
-  const lang = req.query.lang === 'ja' ? 'ja' : 'en';
+  // 日本語の文字が入っていれば日本語、なければ英語（クライアントの指定に関係なく、文字から判定する）
+  const lang = /[\u3040-\u30ff\u3400-\u9fff]/.test(text) ? 'ja' : 'en';
   if (!text) return res.status(400).json({ error: 'text is required' });
 
   try {
