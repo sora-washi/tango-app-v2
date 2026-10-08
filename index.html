@@ -457,6 +457,8 @@
   // ===== 音声読み上げ（iPhone対策・声の選択つき）=====
   let voices = [], speakTimer = null, speechUnlocked = false;
   const NOVELTY = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox)\b/i;
+  const ROBOTIC = /^(Fred|Junior|Ralph|Kathy|Bruce|Agnes|Victoria|Vicki|Princess|Albert)\b/i; // 古い機械的な声
+  const NATURAL = /^(Samantha|Nicky|Aaron|Kyoko|O-?ren)\b/i;                                     // iOS標準の自然な声
   const normLang = v => v.lang.replace('_', '-').toLowerCase();
 
   function loadVoices() {
@@ -473,6 +475,8 @@
     if (normLang(v) === lang.toLowerCase()) sc += 2;
     if (v.default) sc += 1;
     if (NOVELTY.test(v.name)) sc -= 10;
+    if (ROBOTIC.test(v.name)) sc -= 8;
+    if (NATURAL.test(v.name)) sc += 3;
     return sc;
   }
   function voicesFor(base, lang) {
@@ -576,8 +580,8 @@
     if (!useCloud() || appData.settings.autoSpeak === false) return;
     const n = testQueue[currentTestIndex + 1]; if (!n) return;
     const fwd = testConfig.direction === 'forward';
-    const lang = fwd ? (n._folderLang || 'en-US') : 'ja-JP';
-    fetchAudioUrl(fwd ? n.q : n.a, lang.startsWith('ja') ? 'ja' : 'en').catch(() => {});
+    const text = fwd ? n.q : n.a;
+    fetchAudioUrl(text, langOf(text, n._folderLang).startsWith('ja') ? 'ja' : 'en').catch(() => {});
   }
 
   // 設定画面の「AI音声をテスト」：サーバーの状態を画面に表示して、そのまま再生する
@@ -600,6 +604,12 @@
     } catch (e) { show('失敗: ' + (e.message || e), false); }
   }
 
+  // 日本語の文字が含まれていれば日本語、それ以外は英語で読む（フォルダの「読上」設定に左右されない）
+  function langOf(text, folderLang) {
+    if (/[\u3040-\u30ff\u3400-\u9fff]/.test(text)) return 'ja-JP';
+    return (folderLang && folderLang.startsWith('en')) ? folderLang : 'en-US';
+  }
+
   function setBadge(t) { const b = $('engineBadge'); if (b) b.textContent = t; }
 
   function speakText(text, lang) {
@@ -620,7 +630,8 @@
     const w = testQueue[currentTestIndex]; if (!w) return;
     if (auto === true && appData.settings.autoSpeak === false) return; // 自動再生OFFのとき
     const fwd = testConfig.direction === 'forward';
-    speakText(fwd ? w.q : w.a, fwd ? (w._folderLang || 'en-US') : 'ja-JP');
+    const text = fwd ? w.q : w.a;
+    speakText(text, langOf(text, w._folderLang));
   }
 
   function toggleAutoSpeak() { appData.settings.autoSpeak = $('autoSpeakToggle').checked; saveData(); }
