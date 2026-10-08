@@ -57,6 +57,8 @@
   .dark .card-back { background: #111827; border-color: #374151; }
   .swipe-right { transform: translateX(100vw) rotate(15deg) !important; opacity: 0; transition: all .4s ease-out; }
   .swipe-left { transform: translateX(-100vw) rotate(-15deg) !important; opacity: 0; transition: all .4s ease-out; }
+  .card.flipped.swipe-right { transform: rotateY(180deg) translateX(-100vw) rotate(-15deg) !important; }
+  .card.flipped.swipe-left { transform: rotateY(180deg) translateX(100vw) rotate(15deg) !important; }
 </style>
 </head>
 <body class="bg-gray-50 text-gray-800 dark:bg-gray-900 dark:text-gray-100">
@@ -153,6 +155,7 @@
           </div>
           <div class="card-face card-back">
             <div id="cardA" class="font-bold text-red-500 dark:text-blue-400 break-words max-w-full"></div>
+            <div class="text-xs text-gray-400 mt-4">タップで問題に戻る</div>
           </div>
         </div>
       </div>
@@ -208,6 +211,7 @@
   appData.settings = appData.settings || { darkMode: false };
 
   let currentFolderId = null, aiMode = 'manual', testQueue = [], currentTestIndex = 0, testConfig = { direction: 'forward' }, tempValidatedWords = [];
+  let revealed = false; // 答えを一度見たか
 
   function init() {
     if (appData.settings.darkMode) { document.documentElement.classList.add('dark'); $('darkModeToggle').checked = true; }
@@ -361,7 +365,12 @@
 
   function showCard() {
     if (currentTestIndex >= testQueue.length) { alert("テスト完了です！"); saveData(); showScreen('folder'); return; }
-    const card = $('flashcard'); card.classList.remove('flipped', 'swipe-right', 'swipe-left'); card.style.transform = '';
+    const card = $('flashcard');
+    // 次のカードは一瞬で切り替える（めくり戻しの途中で次の答えが透けないように）
+    card.style.transition = 'none';
+    card.classList.remove('flipped', 'swipe-right', 'swipe-left'); card.style.transform = '';
+    void card.offsetWidth; card.style.transition = '';
+    revealed = false;
     $('judgementBtns').classList.add('opacity-0', 'pointer-events-none'); $('judgementBtns').classList.remove('opacity-100');
     $('ad-space').classList.add('hidden');
     const w = testQueue[currentTestIndex], fwd = testConfig.direction === 'forward';
@@ -370,10 +379,13 @@
     speakCurrentWord(true);
   }
 
+  // タップするたびに 問題 ⇄ 答え を切り替え。初回だけ判定ボタンを出す
   function flipCard() {
     const card = $('flashcard');
-    if (!card.classList.contains('flipped')) {
-      card.classList.add('flipped');
+    if (card.classList.contains('swipe-left') || card.classList.contains('swipe-right')) return;
+    card.classList.toggle('flipped');
+    if (!revealed) {
+      revealed = true;
       $('judgementBtns').classList.remove('opacity-0', 'pointer-events-none'); $('judgementBtns').classList.add('opacity-100');
       $('ad-space').classList.remove('hidden');
     }
@@ -390,10 +402,16 @@
 
   function setupSwipe() {
     const card = $('flashcard'); let startX = 0, dx = 0;
-    card.addEventListener('touchstart', e => { if (!card.classList.contains('flipped')) return; startX = e.touches[0].clientX; dx = 0; card.style.transition = 'none'; }, { passive: true });
-    card.addEventListener('touchmove', e => { if (!card.classList.contains('flipped')) return; dx = e.touches[0].clientX - startX; card.style.transform = `rotateY(180deg) translateX(${-dx}px) rotate(${dx / 20}deg)`; }, { passive: true });
+    card.addEventListener('touchstart', e => { if (!revealed) return; startX = e.touches[0].clientX; dx = 0; card.style.transition = 'none'; }, { passive: true });
+    card.addEventListener('touchmove', e => {
+      if (!revealed) return;
+      dx = e.touches[0].clientX - startX;
+      card.style.transform = card.classList.contains('flipped')
+        ? `rotateY(180deg) translateX(${-dx}px) rotate(${-dx / 20}deg)`
+        : `translateX(${dx}px) rotate(${dx / 20}deg)`;
+    }, { passive: true });
     card.addEventListener('touchend', () => {
-      if (!card.classList.contains('flipped')) return;
+      if (!revealed) return;
       card.style.transition = '';
       if (dx > 80) judgeWord(true); else if (dx < -80) judgeWord(false); else card.style.transform = '';
       dx = 0;
