@@ -331,3 +331,278 @@
         const ok = r.isCorrect !== false || !r.suggestion;
         return { q, a: src.a, isCorrect: ok, suggestion: r.suggestion || '' };
       });
+      renderValidation();
+    } catch (e) {
+      showError("AIチェックに失敗しました: " + e.message + "\n「AIなしで保存」でそのまま登録もできます。");
+    } finally {
+      $('loadingOverlay').classList.add('hidden');
+    }
+  }
+
+  function saveRawFromInput() {
+    const f = appData.folders.find(x => x.id === currentFolderId);
+    f.words = parseLines($('wordInput').value).map((p, i) => ({ id: Date.now() + i, q: p.q, a: p.a || "(未入力)", weak: false }));
+    saveData(); showScreen('folder');
+  }
+
+  function renderValidation() {
+    const list = $('validationList'); list.innerHTML = '';
+    tempValidatedWords.forEach((it, idx) => {
+      const div = document.createElement('div');
+      const bad = aiMode === 'manual' && !it.isCorrect;
+      div.className = `p-3 rounded border ${aiMode === 'auto' ? 'bg-white dark:bg-gray-800' : bad ? 'bg-red-50 border-red-300 dark:bg-red-950' : 'bg-green-50 border-green-200 dark:bg-green-950'}`;
+      const label = aiMode === 'auto' ? '✨ 自動生成' : bad ? '⚠️ 修正案あり（元: ' + esc(it.a) + '）' : '✅ OK';
+      const val = bad ? it.suggestion : it.a;
+      div.innerHTML = `<div class="font-bold text-sm mb-2 ${bad ? 'text-red-600' : 'text-gray-600 dark:text-gray-300'}">${label}</div>
+        <div class="flex flex-col sm:flex-row gap-2">
+          <input type="text" id="val_q_${idx}" value="${esc(it.q)}" class="sm:w-1/2 p-2 border rounded text-lg text-gray-800">
+          <input type="text" id="val_a_${idx}" value="${esc(val)}" class="sm:w-1/2 p-2 border rounded text-lg text-gray-800"></div>`;
+      list.appendChild(div);
+    });
+    showScreen('validation');
+  }
+
+  function saveValidatedWords() {
+    const f = appData.folders.find(x => x.id === currentFolderId);
+    f.words = tempValidatedWords.map((_, i) => ({ id: Date.now() + i, q: $(`val_q_${i}`).value, a: $(`val_a_${i}`).value, weak: false })).filter(w => w.q.trim());
+    saveData(); showScreen('folder');
+  }
+
+  function openTestSetting(id) {
+    currentFolderId = id; const f = appData.folders.find(x => x.id === id);
+    if (!f.words.length) return alert("単語がありません。「編集」から追加してね");
+    $('testFolderTitle').innerText = f.name; showScreen('testSetting');
+  }
+
+  function startWeakTest() {
+    const weak = []; appData.folders.forEach(f => f.words.forEach(w => { if (w.weak) weak.push({ ...w, _folderLang: f.lang }); }));
+    if (!weak.length) return alert("苦手な単語はありません！🎉");
+    testConfig.direction = document.querySelector('input[name="testDirection"]:checked').value;
+    testQueue = weak.sort(() => Math.random() - .5); currentTestIndex = 0; showScreen('test'); showCard();
+  }
+
+  function startTest(count) {
+    testConfig.direction = document.querySelector('input[name="testDirection"]:checked').value;
+    const f = appData.folders.find(x => x.id === currentFolderId);
+    const all = f.words.map(w => ({ ...w, _folderLang: f.lang })).sort(() => Math.random() - .5);
+    testQueue = count === 'all' ? all : all.slice(0, count); currentTestIndex = 0; showScreen('test'); showCard();
+  }
+
+  // 文字数に応じてフォントサイズを調整（スマホで見切れない）
+  function fit(el, text, big) {
+    const n = text.length, w = window.innerWidth >= 768;
+    let size = n <= 8 ? (w ? 64 : 40) : n <= 16 ? (w ? 48 : 30) : n <= 40 ? (w ? 36 : 22) : (w ? 28 : 18);
+    el.style.fontSize = (big ? size : size * .9) + 'px'; el.innerText = text;
+  }
+
+  function showCard() {
+    if (currentTestIndex >= testQueue.length) { alert("テスト完了です！"); saveData(); showScreen('folder'); return; }
+    const card = $('flashcard');
+    // 次のカードは一瞬で切り替える（めくり戻しの途中で次の答えが透けないように）
+    card.style.transition = 'none';
+    card.classList.remove('flipped', 'swipe-right', 'swipe-left'); card.style.transform = '';
+    void card.offsetWidth; card.style.transition = '';
+    revealed = false;
+    $('judgementBtns').classList.add('opacity-0', 'pointer-events-none'); $('judgementBtns').classList.remove('opacity-100');
+    $('ad-space').classList.add('hidden');
+    const w = testQueue[currentTestIndex], fwd = testConfig.direction === 'forward';
+    $('progressText').innerText = `${currentTestIndex + 1} / ${testQueue.length}`;
+    fit($('cardQ'), fwd ? w.q : w.a, true); fit($('cardA'), fwd ? w.a : w.q, false);
+    speakCurrentWord(true);
+    prefetchNext();
+  }
+
+  // タップするたびに 問題 ⇄ 答え を切り替え。初回だけ判定ボタンを出す
+  function flipCard() {
+    const card = $('flashcard');
+    if (card.classList.contains('swipe-left') || card.classList.contains('swipe-right')) return;
+    card.classList.toggle('flipped');
+    if (!revealed) {
+      revealed = true;
+      $('judgementBtns').classList.remove('opacity-0', 'pointer-events-none'); $('judgementBtns').classList.add('opacity-100');
+      $('ad-space').classList.remove('hidden');
+    }
+  }
+
+  function judgeWord(ok) {
+    const card = $('flashcard'), cur = testQueue[currentTestIndex];
+    if (!cur || card.classList.contains('swipe-left') || card.classList.contains('swipe-right')) return;
+    appData.folders.forEach(f => { const t = f.words.find(w => w.id === cur.id); if (t) t.weak = !ok; });
+    saveData();
+    card.classList.add(ok ? 'swipe-right' : 'swipe-left');
+    setTimeout(() => { currentTestIndex++; showCard(); }, 400);
+  }
+
+  function setupSwipe() {
+    const card = $('flashcard'); let startX = 0, dx = 0;
+    card.addEventListener('touchstart', e => { if (!revealed) return; startX = e.touches[0].clientX; dx = 0; card.style.transition = 'none'; }, { passive: true });
+    card.addEventListener('touchmove', e => {
+      if (!revealed) return;
+      dx = e.touches[0].clientX - startX;
+      card.style.transform = card.classList.contains('flipped')
+        ? `rotateY(180deg) translateX(${-dx}px) rotate(${-dx / 20}deg)`
+        : `translateX(${dx}px) rotate(${dx / 20}deg)`;
+    }, { passive: true });
+    card.addEventListener('touchend', () => {
+      if (!revealed) return;
+      card.style.transition = '';
+      if (dx > 80) judgeWord(true); else if (dx < -80) judgeWord(false); else card.style.transform = '';
+      dx = 0;
+    });
+  }
+
+  // ===== 音声読み上げ（iPhone対策・声の選択つき）=====
+  let voices = [], speakTimer = null, speechUnlocked = false;
+  const NOVELTY = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox)\b/i;
+  const normLang = v => v.lang.replace('_', '-').toLowerCase();
+
+  function loadVoices() {
+    voices = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+    populateVoiceSelects();
+  }
+  if (window.speechSynthesis) { loadVoices(); speechSynthesis.addEventListener('voiceschanged', loadVoices); }
+
+  // 高品質な声ほど高得点（Premium / Enhanced / Siri を優先し、効果音系の変な声は避ける）
+  function voiceScore(v, lang) {
+    let sc = 0;
+    if (/premium|プレミアム/i.test(v.name)) sc += 6;
+    if (/enhanced|拡張|siri|高品質/i.test(v.name)) sc += 5;
+    if (normLang(v) === lang.toLowerCase()) sc += 2;
+    if (v.default) sc += 1;
+    if (NOVELTY.test(v.name)) sc -= 10;
+    return sc;
+  }
+  function voicesFor(base, lang) {
+    return voices.filter(v => normLang(v).startsWith(base))
+      .map(v => ({ v, sc: voiceScore(v, lang) })).sort((a, b) => b.sc - a.sc).map(x => x.v);
+  }
+
+  // 自分で選んだ声があればそれ、なければ自動（一番高品質な声）
+  function pickVoice(lang) {
+    const base = lang.slice(0, 2).toLowerCase();
+    const saved = (appData.settings.voice || {})[base];
+    if (saved) { const v = voices.find(x => x.voiceURI === saved); if (v) return v; }
+    return voicesFor(base, lang)[0] || null;
+  }
+
+  function populateVoiceSelects() {
+    [['en', 'voiceEn', 'en-US'], ['ja', 'voiceJa', 'ja-JP']].forEach(([base, id, lang]) => {
+      const sel = $(id); if (!sel) return;
+      const saved = (appData.settings.voice || {})[base] || '';
+      sel.innerHTML = '<option value="">自動（おすすめ）</option>' +
+        voicesFor(base, lang).map(v => `<option value="${esc(v.voiceURI)}">${esc(v.name)} (${esc(v.lang)})</option>`).join('');
+      sel.value = saved; if (sel.selectedIndex < 0) sel.value = '';
+    });
+  }
+  function saveVoice(base) {
+    const sel = $(base === 'en' ? 'voiceEn' : 'voiceJa');
+    appData.settings.voice = appData.settings.voice || {};
+    if (sel.value) appData.settings.voice[base] = sel.value; else delete appData.settings.voice[base];
+    saveData();
+  }
+  function previewVoice(base) {
+    speakText(base === 'en' ? 'Hello! This is a sample of the voice.' : 'こんにちは。これは声のサンプルです。', base === 'en' ? 'en-US' : 'ja-JP');
+  }
+
+  // iOSは最初の1回がユーザー操作の中でないと鳴らないので、初回タッチで無音を流して解除する
+  function silentWavUrl() {
+    const n = 800, b = new DataView(new ArrayBuffer(44 + n * 2));
+    const w = (o, str) => [...str].forEach((c, i) => b.setUint8(o + i, c.charCodeAt(0)));
+    w(0, 'RIFF'); b.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); b.setUint32(16, 16, true);
+    b.setUint16(20, 1, true); b.setUint16(22, 1, true); b.setUint32(24, 8000, true); b.setUint32(28, 16000, true);
+    b.setUint16(32, 2, true); b.setUint16(34, 16, true); w(36, 'data'); b.setUint32(40, n * 2, true);
+    return URL.createObjectURL(new Blob([b], { type: 'audio/wav' }));
+  }
+  function unlockSpeech() {
+    if (speechUnlocked) return;
+    speechUnlocked = true;
+    try { player.src = silentWavUrl(); player.play().catch(() => {}); } catch (e) {}
+    if (window.speechSynthesis) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); }
+  }
+  document.addEventListener('touchend', unlockSpeech, { once: true, passive: true });
+  document.addEventListener('click', unlockSpeech, { once: true });
+
+  function speakDevice(text, lang) {
+    if (!window.speechSynthesis || !text) return;
+    clearTimeout(speakTimer);
+    const go = () => {
+      if (!voices.length) loadVoices();
+      const m = new SpeechSynthesisUtterance(text);
+      const v = pickVoice(lang);
+      m.lang = v ? v.lang : lang; if (v) m.voice = v; // 速度は等倍
+      speechSynthesis.speak(m);
+    };
+    // 読み上げ中のときだけ止める。cancel直後のspeakはiOSで無視されるので少し待つ
+    if (speechSynthesis.speaking || speechSynthesis.pending) { speechSynthesis.cancel(); speakTimer = setTimeout(go, 150); }
+    else go();
+  }
+
+  // ===== AI音声（サーバーの /api/tts で生成。iPhoneの設定を変えなくても自然な声になる）=====
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const player = new Audio();        // iOSは1つのAudioを使い回すと、自動再生がブロックされにくい
+  const audioCache = new Map();      // 「言語|単語」→ 音声のURL（同じ単語は再取得しない）
+  let cloudFails = 0, playSeq = 0;
+
+  function useCloud() {
+    if (cloudFails >= 3) return false; // 3回連続で失敗したら、この画面を開いている間は端末の声にする
+    const e = appData.settings.engine || 'auto';
+    return e === 'cloud' || (e === 'auto' && isIOS);
+  }
+  function saveEngine() { appData.settings.engine = $('engineSel').value; cloudFails = 0; saveData(); }
+
+  async function fetchAudioUrl(text, base) {
+    const key = base + '|' + text;
+    if (audioCache.has(key)) return audioCache.get(key);
+    try {
+      const r = await fetch(`/api/tts?lang=${base}&text=${encodeURIComponent(text)}`);
+      if (!r.ok) throw new Error('tts ' + r.status);
+      const url = URL.createObjectURL(await r.blob());
+      if (audioCache.size >= 100) { const k = audioCache.keys().next().value; URL.revokeObjectURL(audioCache.get(k)); audioCache.delete(k); }
+      audioCache.set(key, url); cloudFails = 0;
+      return url;
+    } catch (e) { cloudFails++; throw e; }
+  }
+  async function speakCloud(text, base) {
+    const seq = ++playSeq;
+    const url = await fetchAudioUrl(text, base);
+    if (seq !== playSeq) return;     // 後から別の読み上げが始まっていたら、これは鳴らさない
+    player.src = url;
+    await player.play();
+  }
+  function prefetchNext() {          // 次のカードの音声を先に取っておく
+    if (!useCloud() || appData.settings.autoSpeak === false) return;
+    const n = testQueue[currentTestIndex + 1]; if (!n) return;
+    const fwd = testConfig.direction === 'forward';
+    const lang = fwd ? (n._folderLang || 'en-US') : 'ja-JP';
+    fetchAudioUrl(fwd ? n.q : n.a, lang.startsWith('ja') ? 'ja' : 'en').catch(() => {});
+  }
+
+  function speakText(text, lang) {
+    if (!text) return;
+    if (!useCloud()) { player.pause(); return speakDevice(text, lang); }
+    clearTimeout(speakTimer);
+    if (window.speechSynthesis) speechSynthesis.cancel();
+    speakCloud(text, lang.startsWith('ja') ? 'ja' : 'en').catch(() => speakDevice(text, lang)); // 失敗したら端末の声
+  }
+
+  function speakCurrentWord(auto) {
+    const w = testQueue[currentTestIndex]; if (!w) return;
+    if (auto === true && appData.settings.autoSpeak === false) return; // 自動再生OFFのとき
+    const fwd = testConfig.direction === 'forward';
+    speakText(fwd ? w.q : w.a, fwd ? (w._folderLang || 'en-US') : 'ja-JP');
+  }
+
+  function toggleAutoSpeak() { appData.settings.autoSpeak = $('autoSpeakToggle').checked; saveData(); }
+
+  function toggleDarkMode() { appData.settings.darkMode = $('darkModeToggle').checked; document.documentElement.classList.toggle('dark', appData.settings.darkMode); saveData(); }
+  function exportData() { const a = document.createElement('a'); a.href = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(appData)); a.download = "flashcard_backup.json"; a.click(); }
+  function importData(ev) {
+    const file = ev.target.files[0]; if (!file) return; const r = new FileReader();
+    r.onload = e => { try { const d = JSON.parse(e.target.result); if (d.folders) { appData = d; appData.settings = appData.settings || {}; saveData(); showScreen('folder'); alert("復元完了！"); } } catch { alert("無効なファイルです。"); } };
+    r.readAsText(file);
+  }
+
+  window.onload = init;
+</script>
+</body>
+</html>
