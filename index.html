@@ -74,7 +74,8 @@
 
     <!-- フォルダー -->
     <div id="folderScreen">
-      <h2 class="text-xl font-bold mb-3 border-b pb-2 dark:border-gray-700">フォルダー</h2>
+      <h2 class="text-xl font-bold mb-2 border-b pb-2 dark:border-gray-700">フォルダー</h2>
+      <p class="text-xs text-gray-500 mb-3"><span class="text-green-600 font-bold">●</span> わかる　<span class="text-red-500 font-bold">●</span> わからない　<span class="text-gray-400 font-bold">●</span> 未学習（円の中は「わかる」の割合）</p>
       <div id="folderList" class="space-y-3 mb-5"></div>
       <button onclick="createNewFolder()" class="w-full bg-white dark:bg-gray-800 text-blue-600 font-bold py-3 rounded-lg border-2 border-blue-600 mb-5">＋ 新しいフォルダーを作成</button>
       <h2 class="text-xl font-bold mb-3 border-b pb-2 dark:border-gray-700 text-red-500">復習</h2>
@@ -90,16 +91,22 @@
           <option value="ja-JP">読上: 日本語</option>
         </select>
       </div>
+
+      <h3 class="font-bold mb-1">登録済みの問題 <span class="text-sm text-gray-500">(<span id="wordCount">0</span>)</span></h3>
+      <p class="text-xs text-gray-500 mb-2"><span class="text-green-600 font-bold">●</span> わかる　<span class="text-red-500 font-bold">●</span> わからない　<span class="text-gray-400 font-bold">●</span> 未学習　／　右の ✕ で1問だけ削除</p>
+      <div id="wordList" class="mb-5 max-h-72 overflow-y-auto rounded-lg border dark:border-gray-700 bg-white dark:bg-gray-800 divide-y dark:divide-gray-700"></div>
+
+      <h3 class="font-bold mb-2">問題を追加</h3>
       <div class="flex gap-2 mb-3 p-1 bg-gray-200 dark:bg-gray-700 rounded-lg">
-        <button id="modeManual" onclick="setAiMode('manual')" class="flex-1 text-sm font-bold rounded">📝 単語＋意味</button>
+        <button id="modeManual" onclick="setAiMode('manual')" class="flex-1 text-sm font-bold rounded">📝 英語＋意味</button>
         <button id="modeAuto" onclick="setAiMode('auto')" class="flex-1 text-sm font-bold rounded">✨ AIおまかせ</button>
       </div>
       <p id="editDesc" class="text-sm text-gray-500 mb-2"></p>
-      <textarea id="wordInput" class="w-full h-56 md:h-80 p-3 border rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none resize-none mb-3"></textarea>
+      <textarea id="wordInput" placeholder="例）&#10;apple りんご&#10;take care of 〜の世話をする&#10;look forward to" class="w-full h-40 md:h-56 p-3 border rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 outline-none resize-none mb-3"></textarea>
       <div id="errorBox" class="hidden mb-3 p-3 rounded-lg bg-red-50 border border-red-300 text-red-700 text-sm"></div>
       <div class="flex gap-2">
-        <button onclick="processWords()" class="flex-1 bg-blue-600 text-white font-bold py-3 rounded-lg">AIチェック・登録</button>
-        <button onclick="saveRawFromInput()" class="px-3 bg-yellow-100 text-yellow-800 font-bold rounded-lg text-sm">AIなしで保存</button>
+        <button onclick="processWords()" class="flex-1 bg-blue-600 text-white font-bold py-3 rounded-lg">AIチェックして追加</button>
+        <button onclick="saveRawFromInput()" class="px-3 bg-yellow-100 text-yellow-800 font-bold rounded-lg text-sm">AIなしで追加</button>
         <button onclick="showScreen('folder')" class="px-4 bg-gray-300 text-gray-700 font-bold rounded-lg">戻る</button>
       </div>
     </div>
@@ -229,6 +236,8 @@
   <button onclick="showScreen('settings')" class="flex flex-col items-center px-6 text-gray-500"><span class="text-2xl">⚙️</span><span class="text-xs font-bold">設定</span></button>
 </nav>
 
+<div id="toast" class="hidden fixed left-1/2 -translate-x-1/2 top-20 z-50 max-w-[90%] bg-gray-800 text-white text-sm px-4 py-2 rounded-full shadow-lg"></div>
+
 <div id="loadingOverlay" class="hidden fixed inset-0 bg-white/90 dark:bg-gray-900/90 flex flex-col items-center justify-center z-50">
   <div class="animate-spin rounded-full h-12 w-12 border-t-4 border-blue-500 mb-4"></div>
   <p class="font-bold">AIが処理中...</p>
@@ -245,6 +254,7 @@
 
   let currentFolderId = null, aiMode = 'manual', testQueue = [], currentTestIndex = 0, testConfig = { direction: 'forward' }, tempValidatedWords = [];
   let revealed = false; // 答えを一度見たか
+  const ADS_ENABLED = false; // 広告を入れる時に true にする（広告枠は、判定ボタンから離れた場所に置くこと）
 
   function init() {
     if (appData.settings.darkMode) { document.documentElement.classList.add('dark'); $('darkModeToggle').checked = true; }
@@ -272,12 +282,38 @@
     window.scrollTo(0, 0);
   }
 
+  // ===== 学習状況（わかる / わからない / 未学習）=====
+  function wordState(w) { return w.weak ? 'unknown' : (w.known ? 'known' : 'new'); }
+  function folderStats(f) {
+    const c = { known: 0, unknown: 0, fresh: 0 };
+    f.words.forEach(w => { const s = wordState(w); if (s === 'known') c.known++; else if (s === 'unknown') c.unknown++; else c.fresh++; });
+    return c;
+  }
+  // 円グラフ（緑＝わかる / 赤＝わからない / 灰＝未学習）。中央は「わかる」の割合
+  function donut(c) {
+    const total = c.known + c.unknown + c.fresh;
+    const pk = total ? c.known / total * 100 : 0, pu = total ? c.unknown / total * 100 : 0;
+    const ring = (col, p, off) => p > 0 ? `<circle cx="18" cy="18" r="15.9155" fill="none" stroke="${col}" stroke-width="4" stroke-dasharray="${p} ${100 - p}" stroke-dashoffset="${-off}"/>` : '';
+    return `<div class="relative w-16 h-16 shrink-0">
+      <svg viewBox="0 0 36 36" class="w-16 h-16 -rotate-90"><circle cx="18" cy="18" r="15.9155" fill="none" stroke="#d1d5db" stroke-width="4"/>${ring('#22c55e', pk, 0)}${ring('#ef4444', pu, pk)}</svg>
+      <div class="absolute inset-0 flex items-center justify-center text-xs font-bold">${total ? Math.round(pk) + '%' : '－'}</div>
+    </div>`;
+  }
+
   function renderFolderList() {
     const list = $('folderList'); list.innerHTML = '';
     appData.folders.forEach(f => {
+      const c = folderStats(f);
       const div = document.createElement('div');
-      div.className = "bg-white dark:bg-gray-800 p-3 rounded-lg shadow-sm border dark:border-gray-700 flex justify-between items-center gap-2";
-      div.innerHTML = `<div class="flex-1 min-w-0 cursor-pointer py-1" onclick="openTestSetting(${f.id})"><h3 class="font-bold text-lg truncate">${esc(f.name)}</h3><p class="text-sm text-gray-500">${f.words.length} 単語 | 🗣️ ${f.lang === 'ja-JP' ? '日本語' : '英語'}</p></div><button onclick="openEdit(${f.id})" class="bg-gray-200 dark:bg-gray-700 px-4 rounded font-bold">編集</button><button onclick="deleteFolder(${f.id})" class="text-red-400 px-3 text-lg">✕</button>`;
+      div.className = "bg-white dark:bg-gray-800 p-3 rounded-lg shadow-sm border dark:border-gray-700 flex items-center gap-3";
+      div.innerHTML = `${donut(c)}
+        <div class="flex-1 min-w-0 cursor-pointer py-1" onclick="openTestSetting(${f.id})">
+          <h3 class="font-bold text-lg truncate">${esc(f.name)}</h3>
+          <p class="text-sm text-gray-500">${f.words.length} 問</p>
+          <p class="text-xs font-bold mt-0.5"><span class="text-green-600">● ${c.known}</span> <span class="text-red-500">● ${c.unknown}</span> <span class="text-gray-400">● ${c.fresh}</span></p>
+        </div>
+        <button onclick="openEdit(${f.id})" class="bg-gray-200 dark:bg-gray-700 px-3 rounded font-bold text-sm">編集</button>
+        <button onclick="deleteFolder(${f.id})" class="text-red-400 px-2 text-lg" aria-label="フォルダーを削除">✕</button>`;
       list.appendChild(div);
     });
   }
@@ -288,64 +324,156 @@
   function openEdit(id) {
     currentFolderId = id; const f = appData.folders.find(x => x.id === id);
     $('editFolderTitle').innerText = f.name; $('folderLang').value = f.lang || "en-US";
-    $('wordInput').value = f.words.map(w => `${w.q}\t${w.a}`).join('\n');
-    $('errorBox').classList.add('hidden'); setAiMode('manual'); showScreen('edit');
+    $('wordInput').value = ''; $('errorBox').classList.add('hidden');
+    setAiMode('manual'); renderWordList(); showScreen('edit');
   }
+
+  // 登録済みの問題の一覧（右の ✕ で1問だけ削除）
+  function renderWordList() {
+    const f = appData.folders.find(x => x.id === currentFolderId); if (!f) return;
+    $('wordCount').innerText = f.words.length;
+    const dot = { known: 'text-green-600', unknown: 'text-red-500', new: 'text-gray-400' };
+    $('wordList').innerHTML = f.words.length ? f.words.map(w => `<div class="flex items-center gap-2 p-2">
+        <span class="${dot[wordState(w)]} shrink-0">●</span>
+        <div class="flex-1 min-w-0"><div class="font-bold break-words">${esc(w.q)}</div><div class="text-sm text-gray-500 break-words">${esc(w.a)}</div></div>
+        <button onclick="deleteWord(${w.id})" class="shrink-0 w-11 text-gray-400 hover:text-red-500 text-xl" aria-label="この問題を削除">✕</button>
+      </div>`).join('') : '<p class="p-4 text-sm text-gray-400 text-center">まだ問題がありません</p>';
+  }
+  function deleteWord(id) {
+    const f = appData.folders.find(x => x.id === currentFolderId); if (!f) return;
+    const w = f.words.find(x => x.id === id); if (!w) return;
+    if (!confirm(`「${w.q}」を削除しますか？`)) return;
+    f.words = f.words.filter(x => x.id !== id); saveData(); renderWordList();
+  }
+  let toastTimer;
+  function showToast(msg) { const t = $('toast'); t.textContent = msg; t.classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), 2500); }
+
   function saveFolderLang() { const f = appData.folders.find(x => x.id === currentFolderId); if (f) { f.lang = $('folderLang').value; saveData(); } }
 
   function setAiMode(mode) {
     aiMode = mode;
     $('modeManual').className = "flex-1 text-sm font-bold rounded " + (mode === 'manual' ? "bg-white shadow text-blue-600" : "text-gray-500");
     $('modeAuto').className = "flex-1 text-sm font-bold rounded " + (mode === 'auto' ? "bg-white shadow text-purple-600" : "text-gray-500");
-    $('editDesc').innerText = mode === 'manual' ? "1行に1語。単語と意味をスペース・カンマ・タブで区切って入力（AIが添削）" : "1行に1語。単語だけ入力（AIが意味を自動生成）";
+    $('editDesc').innerText = mode === 'manual'
+      ? "1行に1問。単語でもフレーズでもOK。「英語 日本語の意味」の順に書くと、日本語の手前までが問題になります（AIが意味を確認）"
+      : "1行に1問。単語やフレーズだけ入力（AIが意味を自動生成）";
   }
 
-  // 1行 = 1エントリ（最初の区切りまでが単語、残りが意味）
+  // ===== 入力の整形 =====
+  // 問題（英語の単語・フレーズ）から、行頭の番号・箇条書き・脚注番号・余計な記号を取り除く
+  // 行頭の「1.」「2)」「①」「・」「-」などを繰り返し除去
+  function stripLead(s) {
+    let prev;
+    do {
+      prev = s;
+      s = s.replace(/^[\s\u3000]*(?:\d+[.)）．、:：\-–—]?[\s\u3000]+|\d+[.)）．、:：]|[\u2460-\u249b\u24eb-\u24f4\u3251-\u325f]|[・•●○◎◆◇■□▪▫▶▷►★☆※\-–—]+)[\s\u3000]*/, '');
+    } while (s !== prev);
+    return s;
+  }
+  function cleanQ(s) {
+    s = String(s || '')
+      .replace(/[\u2018\u2019`\u00b4]/g, "'")                       // 曲がった引用符 → ふつうの '
+      .replace(/[\u00b9\u00b2\u00b3\u2070-\u2079]/g, '')            // 上付き数字（脚注）
+      .replace(/[(\[（【［]\s*\d+\s*[)\]）】］]/g, '')                 // (1) [2] のような番号
+      .replace(/[*#_^~={}<>|\\"\u201c\u201d「」『』]/g, '');           // 余計な記号
+    s = stripLead(s);
+    s = s.replace(/[\s\u3000]+/g, ' ').trim()
+         .replace(/[\s,，、;；:：|｜\/／\-–—=＝→(（\[【［]+$/, '');         // 行末の区切り記号
+    if (!/\s/.test(s)) s = s.replace(/[.．]+$/, '');                 // 1語だけなら行末のピリオドも除く
+    return s.trim();
+  }
+  function cleanA(s) {
+    s = String(s || '').replace(/^[\s,，、;；:：\-–—=＝→]+/, '').trim();
+    const m = s.match(/^[（(](.*)[）)]$/); if (m) s = m[1].trim();
+    if (!/[（(\[【［]/.test(s)) s = s.replace(/[)）\]】］]+$/, '');   // 閉じカッコだけ残っていたら除く
+    return s;
+  }
+
+  // 1行を「問題」と「意味」に分ける。日本語の手前までが問題なので、英語のフレーズも1問として扱える
+  const JA = /[\u3040-\u30fa\u30fc-\u30ff\u3400-\u9fff\uff66-\uff9f]/;   // ひらがな・カタカナ・漢字（「・」は除く）
+  function splitLine(line) {
+    const tab = line.indexOf('\t');
+    if (tab >= 0) return [line.slice(0, tab), line.slice(tab + 1)];  // タブ区切り（表からのコピー）
+    const m = line.match(JA);
+    if (!m) return [line, ''];                                       // 日本語が無ければ、行全体が1つの問題
+    let i = m.index;
+    const glue = c => (/[^\x00-\x7f]/.test(c) && !/[\p{L}\p{N}]/u.test(c)) || /[0-9(\[~]/.test(c);
+    while (i > 0 && glue(line[i - 1])) i--;                       // 〜 ～ （ ( 1 など、日本語にくっついた記号・数字は意味側へ
+    if (i === 0) {                                                   // 日本語が先頭 → 日本語が問題、英字からが答え
+      const e = line.search(/[A-Za-z]/);
+      return e > 0 ? [line.slice(0, e), line.slice(e)] : [line, ''];
+    }
+    return [line.slice(0, i), line.slice(i)];
+  }
   function parseLines(text) {
-    return text.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
-      const m = l.match(/^(\S+?)[\s,，、\t]+(.+)$/);
-      return m ? { q: m[1], a: m[2].trim() } : { q: l, a: '' };
+    const out = [];
+    text.split('\n').forEach(raw => {
+      const line = stripLead(raw.trim()); if (!line) return;
+      const [rq, ra] = splitLine(line);
+      const q = cleanQ(rq); if (!q) return;
+      out.push({ q, a: cleanA(ra) });
     });
+    return out;
   }
 
   function showError(msg) { const b = $('errorBox'); b.innerText = msg; b.classList.remove('hidden'); }
 
   async function processWords() {
-    const text = $('wordInput').value.trim();
-    if (!text) return;
+    const input = parseLines($('wordInput').value);
+    if (!input.length) return showError("追加する単語・フレーズを入力してね");
+    if (input.length > 100) return showError("一度に追加できるのは100件までです。分けて追加してね");
     $('errorBox').classList.add('hidden');
     $('loadingOverlay').classList.remove('hidden');
     try {
       const response = await fetch('/api/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, aiMode })
+        body: JSON.stringify({ items: input, aiMode })
       });
       let data;
       try { data = await response.json(); } catch { throw new Error(`サーバー応答が不正です (HTTP ${response.status})。Vercelにデプロイした /api/generate が動いているか確認してください。`); }
       if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
       if (!Array.isArray(data.result) || !data.result.length) throw new Error("AIの結果が空でした。");
 
-      // 入力側の単語と順番で突き合わせ、AIの返答が欠けても崩れないようにする
-      const input = parseLines(text);
+      // 入力の順番でAIの返答と突き合わせる（返答が欠けても崩れない）
       tempValidatedWords = input.map((src, i) => {
         const r = data.result[i] || {};
-        const q = src.q || r.q || '';
-        if (aiMode === 'auto') return { q, a: r.a || src.a || '' };
-        const ok = r.isCorrect !== false || !r.suggestion;
-        return { q, a: src.a, isCorrect: ok, suggestion: r.suggestion || '' };
+        if (aiMode === 'auto') return { q: src.q, a: r.a || '' };
+        const ok = !!src.a && (r.isCorrect !== false || !r.suggestion);
+        return { q: src.q, a: src.a, isCorrect: ok, suggestion: r.suggestion || r.a || '' };
       });
       renderValidation();
     } catch (e) {
-      showError("AIチェックに失敗しました: " + e.message + "\n「AIなしで保存」でそのまま登録もできます。");
+      showError("AIチェックに失敗しました: " + e.message + "\n「AIなしで追加」でそのまま登録もできます。");
     } finally {
       $('loadingOverlay').classList.add('hidden');
     }
   }
 
-  function saveRawFromInput() {
+  // 登録済みに追加する（同じ問題は重複しないようにスキップ。学習状況は消えない）
+  function addWords(items) {
     const f = appData.folders.find(x => x.id === currentFolderId);
-    f.words = parseLines($('wordInput').value).map((p, i) => ({ id: Date.now() + i, q: p.q, a: p.a || "(未入力)", weak: false }));
-    saveData(); showScreen('folder');
+    const have = new Set(f.words.map(w => w.q.toLowerCase()));
+    let added = 0, skipped = 0;
+    items.forEach(it => {
+      const q = cleanQ(it.q), key = q.toLowerCase();
+      if (!q || have.has(key)) { skipped++; return; }
+      have.add(key);
+      f.words.push({ id: Date.now() + added, q, a: String(it.a || '').trim() || "(未入力)", weak: false, known: false });
+      added++;
+    });
+    saveData();
+    return { added, skipped };
+  }
+  function afterAdd(r) {
+    $('wordInput').value = ''; $('errorBox').classList.add('hidden');
+    renderWordList(); showScreen('edit');
+    showToast(`${r.added}件を追加しました` + (r.skipped ? `（重複・空の${r.skipped}件はスキップ）` : ''));
+  }
+
+  function saveRawFromInput() {
+    const items = parseLines($('wordInput').value);
+    if (!items.length) return showError("追加する単語・フレーズを入力してね");
+    afterAdd(addWords(items));
   }
 
   function renderValidation() {
@@ -355,7 +483,7 @@
       const bad = aiMode === 'manual' && !it.isCorrect;
       div.className = `p-3 rounded border ${aiMode === 'auto' ? 'bg-white dark:bg-gray-800' : bad ? 'bg-red-50 border-red-300 dark:bg-red-950' : 'bg-green-50 border-green-200 dark:bg-green-950'}`;
       const label = aiMode === 'auto' ? '✨ 自動生成' : bad ? '⚠️ 修正案あり（元: ' + esc(it.a) + '）' : '✅ OK';
-      const val = bad ? it.suggestion : it.a;
+      const val = bad ? (it.suggestion || it.a) : it.a;
       div.innerHTML = `<div class="font-bold text-sm mb-2 ${bad ? 'text-red-600' : 'text-gray-600 dark:text-gray-300'}">${label}</div>
         <div class="flex flex-col sm:flex-row gap-2">
           <input type="text" id="val_q_${idx}" value="${esc(it.q)}" class="sm:w-1/2 p-2 border rounded text-lg text-gray-800">
@@ -366,9 +494,7 @@
   }
 
   function saveValidatedWords() {
-    const f = appData.folders.find(x => x.id === currentFolderId);
-    f.words = tempValidatedWords.map((_, i) => ({ id: Date.now() + i, q: $(`val_q_${i}`).value, a: $(`val_a_${i}`).value, weak: false })).filter(w => w.q.trim());
-    saveData(); showScreen('folder');
+    afterAdd(addWords(tempValidatedWords.map((_, i) => ({ q: $(`val_q_${i}`).value, a: $(`val_a_${i}`).value }))));
   }
 
   function openTestSetting(id) {
@@ -378,7 +504,7 @@
   }
 
   function startWeakTest() {
-    const weak = []; appData.folders.forEach(f => f.words.forEach(w => { if (w.weak) weak.push({ ...w, _folderLang: f.lang }); }));
+    const weak = []; appData.folders.forEach(f => f.words.forEach(w => { if (w.weak) weak.push({ ...w, _folderLang: f.lang, _fid: f.id }); }));
     if (!weak.length) return alert("苦手な単語はありません！🎉");
     testConfig.direction = document.querySelector('input[name="testDirection"]:checked').value;
     testQueue = weak.sort(() => Math.random() - .5); currentTestIndex = 0; showScreen('test'); showCard();
@@ -387,7 +513,7 @@
   function startTest(count) {
     testConfig.direction = document.querySelector('input[name="testDirection"]:checked').value;
     const f = appData.folders.find(x => x.id === currentFolderId);
-    const all = f.words.map(w => ({ ...w, _folderLang: f.lang })).sort(() => Math.random() - .5);
+    const all = f.words.map(w => ({ ...w, _folderLang: f.lang, _fid: f.id })).sort(() => Math.random() - .5);
     testQueue = count === 'all' ? all : all.slice(0, count); currentTestIndex = 0; showScreen('test'); showCard();
   }
 
@@ -423,14 +549,15 @@
     if (!revealed) {
       revealed = true;
       $('judgementBtns').classList.remove('opacity-0', 'pointer-events-none'); $('judgementBtns').classList.add('opacity-100');
-      $('ad-space').classList.remove('hidden');
+      if (ADS_ENABLED) $('ad-space').classList.remove('hidden');
     }
   }
 
   function judgeWord(ok) {
     const card = $('flashcard'), cur = testQueue[currentTestIndex];
     if (!cur || card.classList.contains('swipe-left') || card.classList.contains('swipe-right')) return;
-    appData.folders.forEach(f => { const t = f.words.find(w => w.id === cur.id); if (t) t.weak = !ok; });
+    const f = appData.folders.find(x => x.id === cur._fid), t = f && f.words.find(w => w.id === cur.id);
+    if (t) { t.weak = !ok; t.known = ok; }   // わかる / わからない を記録
     saveData();
     card.classList.add(ok ? 'swipe-right' : 'swipe-left');
     setTimeout(() => { currentTestIndex++; showCard(); }, 400);
