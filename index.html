@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="ja">
-<head><script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2339409930388098"
-     crossorigin="anonymous"></script></head>
+<head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>無料AI単語帳アプリ｜英単語の意味を自動生成＆スワイプで暗記 - Ultimate Flashcard</title>
@@ -81,6 +80,7 @@
       <button onclick="createNewFolder()" class="w-full bg-white dark:bg-gray-800 text-blue-600 font-bold py-3 rounded-lg border-2 border-blue-600 mb-5">＋ 新しいフォルダーを作成</button>
       <h2 class="text-xl font-bold mb-3 border-b pb-2 dark:border-gray-700 text-red-500">復習</h2>
       <button onclick="startWeakTest()" class="w-full bg-red-50 text-red-600 font-bold py-4 rounded-lg border-2 border-red-200">⚠️ 苦手な単語を再テスト (<span id="weakCount">0</span>)</button>
+      <p class="mt-8 text-center text-xs text-gray-400"><a href="/guide.html" class="underline mx-2">使い方</a><a href="/privacy.html" class="underline mx-2">プライバシーポリシー</a><a href="/contact.html" class="underline mx-2">お問い合わせ</a></p>
     </div>
 
     <!-- 編集 -->
@@ -125,7 +125,8 @@
 
     <!-- テスト設定 -->
     <div id="testSettingScreen" class="hidden">
-      <h2 id="testFolderTitle" class="text-2xl font-bold mb-5 text-center"></h2>
+      <h2 id="testFolderTitle" class="text-2xl font-bold mb-2 text-center"></h2>
+      <p id="roundInfo" class="text-center text-sm text-gray-500 mb-4"></p>
       <div class="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm mb-5">
         <h3 class="font-bold mb-3 border-b dark:border-gray-700 pb-1">出題の向き</h3>
         <div class="flex gap-2 mb-5">
@@ -428,7 +429,7 @@
     try {
       const response = await fetch('/api/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: input, aiMode })
+        body: JSON.stringify({ items: input, text: input.map(i => i.a ? `${i.q} ${i.a}` : i.q).join('\n'), aiMode })
       });
       let data;
       try { data = await response.json(); } catch { throw new Error(`サーバー応答が不正です (HTTP ${response.status})。Vercelにデプロイした /api/generate が動いているか確認してください。`); }
@@ -444,7 +445,7 @@
       });
       renderValidation();
     } catch (e) {
-      showError("AIチェックに失敗しました: " + e.message + "\n「AIなしで追加」でそのまま登録もできます。");
+      showError("AIチェックに失敗しました: " + e.message + (/入力が空/.test(e.message) ? "\n（サーバーの api/generate.js が古い可能性があります。最新版に置き換えてデプロイしてください）" : "") + "\n「AIなしで追加」でそのまま登録もできます。");
     } finally {
       $('loadingOverlay').classList.add('hidden');
     }
@@ -501,7 +502,22 @@
   function openTestSetting(id) {
     currentFolderId = id; const f = appData.folders.find(x => x.id === id);
     if (!f.words.length) return alert("単語がありません。「編集」から追加してね");
-    $('testFolderTitle').innerText = f.name; showScreen('testSetting');
+    $('testFolderTitle').innerText = f.name;
+    $('roundInfo').textContent = `${f.round || 1}周目：今の周でまだ出していない問題 ${remainingCount(f)} / ${f.words.length} 問`;
+    showScreen('testSetting');
+  }
+
+  // ===== 出題：一周するまで同じ問題を出さない =====
+  const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  function remainingCount(f) { const r = f.round || 1; return f.words.filter(w => (w.r || 0) < r).length; }
+  function pickQuestions(f, count) {
+    f.round = f.round || 1;
+    const n = count === 'all' ? f.words.length : Math.min(count, f.words.length);
+    const remain = shuffle(f.words.filter(w => (w.r || 0) < f.round));   // 今の周で、まだ出していない問題
+    if (remain.length >= n) return remain.slice(0, n);
+    f.round++;                                                          // 足りなければ、残りを全部出して次の周へ
+    const ids = new Set(remain.map(w => w.id));
+    return remain.concat(shuffle(f.words.filter(w => !ids.has(w.id))).slice(0, n - remain.length));
   }
 
   function startWeakTest() {
@@ -514,8 +530,8 @@
   function startTest(count) {
     testConfig.direction = document.querySelector('input[name="testDirection"]:checked').value;
     const f = appData.folders.find(x => x.id === currentFolderId);
-    const all = f.words.map(w => ({ ...w, _folderLang: f.lang, _fid: f.id })).sort(() => Math.random() - .5);
-    testQueue = count === 'all' ? all : all.slice(0, count); currentTestIndex = 0; showScreen('test'); showCard();
+    testQueue = shuffle(pickQuestions(f, count)).map(w => ({ ...w, _folderLang: f.lang, _fid: f.id }));
+    saveData(); currentTestIndex = 0; showScreen('test'); showCard();
   }
 
   // 文字数に応じてフォントサイズを調整（スマホで見切れない）
@@ -536,6 +552,8 @@
     $('judgementBtns').classList.add('opacity-0', 'pointer-events-none'); $('judgementBtns').classList.remove('opacity-100');
     $('ad-space').classList.add('hidden');
     const w = testQueue[currentTestIndex], fwd = testConfig.direction === 'forward';
+    const f0 = appData.folders.find(x => x.id === w._fid), t0 = f0 && f0.words.find(x => x.id === w.id);
+    if (t0) t0.r = f0.round || 1;                                  // この周で出題済みにする
     $('progressText').innerText = `${currentTestIndex + 1} / ${testQueue.length}`;
     fit($('cardQ'), fwd ? w.q : w.a, true); fit($('cardA'), fwd ? w.a : w.q, false);
     speakCurrentWord(true);
