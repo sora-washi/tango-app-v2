@@ -8,18 +8,35 @@ export default async function handler(req, res) {
 
   let body = req.body;
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } }
-  const { text, aiMode } = body || {};
+  body = body || {};
+  const aiMode = body.aiMode;
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'サーバーにAPIキーが設定されていません。' });
 
-  const lines = String(text || '').split('\n').map(s => s.trim()).filter(Boolean).slice(0, 100);
-  if (!lines.length) return res.status(400).json({ error: '入力が空です。' });
-  const list = lines.join('\n');
+  // items: [{ q: 英語の単語・フレーズ, a: 日本語の意味 }]（古いクライアントの text にも対応）
+  let items = Array.isArray(body.items)
+    ? body.items
+    : String(body.text || '').split('\n').map(l => ({ q: l.trim(), a: '' }));
+  items = items
+    .map(i => ({ q: String(i?.q ?? '').trim().slice(0, 200), a: String(i?.a ?? '').trim().slice(0, 200) }))
+    .filter(i => i.q)
+    .slice(0, 100);
+  if (!items.length) return res.status(400).json({ error: '入力が空です。' });
 
   const prompt = aiMode === 'manual'
-    ? `以下は「単語 意味」のペアのリストです。各行について、意味が明らかに間違っていないか確認し、入力と同じ順番・同じ件数で返してください。間違っていれば isCorrect を false にして suggestion に正しい日本語の意味を入れてください。JSON配列のみ返すこと。形式: [{"q":"単語","a":"元の意味","isCorrect":true,"suggestion":""}]\n\n${list}`
-    : `以下の単語リストそれぞれに、一般的な日本語の意味を付けてください。入力と同じ順番・同じ件数で、JSON配列のみ返すこと。形式: [{"q":"単語","a":"意味"}]\n\n${list}`;
+    ? `以下は「英語の単語またはフレーズ | 日本語の意味」のリストです。各項目について、意味が明らかに間違っていないか確認してください。\n` +
+      `・入力と同じ順番・同じ件数で、JSON配列のみ返すこと。q は入力のまま変更しないこと。\n` +
+      `・間違っていれば isCorrect を false にして、suggestion に正しい日本語の意味を入れること。\n` +
+      `・意味が空の項目は isCorrect を false にして、suggestion に自然な日本語の意味を入れること。\n` +
+      `・フレーズは、フレーズ全体の意味で判断すること。\n` +
+      `形式: [{"q":"...","a":"元の意味","isCorrect":true,"suggestion":""}]\n\n` +
+      items.map((it, n) => `${n + 1}. ${it.q} | ${it.a}`).join('\n')
+    : `以下の英語の単語またはフレーズそれぞれに、自然で一般的な日本語の意味を付けてください。\n` +
+      `・フレーズは、フレーズ全体の意味にすること（単語ごとに分けない）。\n` +
+      `・入力と同じ順番・同じ件数で、JSON配列のみ返すこと。q は入力のまま変更しないこと。\n` +
+      `形式: [{"q":"...","a":"意味"}]\n\n` +
+      items.map((it, n) => `${n + 1}. ${it.q}`).join('\n');
 
   let lastError = 'AIから応答がありませんでした。';
   for (const model of MODELS) {
