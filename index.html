@@ -10,6 +10,10 @@
 <link rel="canonical" href="https://swipe-card.net/">
 <meta name="theme-color" content="#2563eb">
 
+<!-- Google AdSense（サイト確認用コード） -->
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2339409930388098"
+     crossorigin="anonymous"></script>
+
 <!-- SNS・LINEなどでシェアされた時の表示 -->
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://swipe-card.net/">
@@ -173,7 +177,25 @@
         <button onclick="judgeWord(false)" class="flex-1 bg-red-100 border-2 border-red-500 text-red-600 font-bold py-4 rounded-xl">← 分からない</button>
         <button onclick="judgeWord(true)" class="flex-1 bg-green-100 border-2 border-green-500 text-green-600 font-bold py-4 rounded-xl">覚えた →</button>
       </div>
-      <div id="ad-space" class="w-full bg-gray-200 dark:bg-gray-800 text-center py-3 text-gray-400 text-sm hidden mt-3">スポンサーリンク</div>
+    </div>
+
+    <!-- 結果 -->
+    <div id="resultScreen" class="hidden">
+      <h2 id="resultTitle" class="text-2xl font-bold text-center mb-3"></h2>
+      <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-5 mb-4 text-center">
+        <div id="resultScore" class="text-4xl font-extrabold text-blue-600"></div>
+        <div id="resultPct" class="text-sm text-gray-500 mt-1"></div>
+        <p id="resultMsg" class="mt-3 text-sm"></p>
+      </div>
+      <div id="resultAd" class="hidden my-6"></div>
+      <div id="resultWrongBox" class="hidden mb-6">
+        <h3 class="font-bold mb-2">間違えた問題</h3>
+        <div id="resultWrongList" class="rounded-lg border dark:border-gray-700 bg-white dark:bg-gray-800 divide-y dark:divide-gray-700 max-h-72 overflow-y-auto"></div>
+      </div>
+      <div class="flex gap-2">
+        <button id="resultNext" onclick="resultNext()" class="flex-1 bg-blue-600 text-white font-bold py-3 rounded-lg"></button>
+        <button onclick="showScreen('folder')" class="px-4 bg-gray-300 text-gray-700 font-bold rounded-lg">終了</button>
+      </div>
     </div>
 
     <!-- 設定 -->
@@ -256,7 +278,10 @@
 
   let currentFolderId = null, aiMode = 'manual', testQueue = [], currentTestIndex = 0, testConfig = { direction: 'forward' }, tempValidatedWords = [];
   let revealed = false; // 答えを一度見たか
-  const ADS_ENABLED = false; // 広告を入れる時に true にする（広告枠は、判定ボタンから離れた場所に置くこと）
+  let retryRound = 0, roundWrong = [], sessionFirst = { correct: 0, total: 0 }; // 再テストの状態
+  const ADS_ENABLED = false;                  // AdSenseの審査に通って、広告ユニットを作ったら true にする
+  const AD_CLIENT = 'ca-pub-2339409930388098';
+  const AD_SLOT_RESULT = '';                  // 結果画面用の広告ユニットのID（数字）をここに入れる
 
   function init() {
     if (appData.settings.darkMode) { document.documentElement.classList.add('dark'); $('darkModeToggle').checked = true; }
@@ -276,8 +301,8 @@
   function updateWeakCount() { let c = 0; appData.folders.forEach(f => f.words.forEach(w => { if (w.weak) c++; })); $('weakCount').innerText = c; }
 
   function showScreen(screen) {
-    ['folderScreen','editScreen','validationScreen','testSettingScreen','testScreen','settingsScreen'].forEach(s => $(s).classList.add('hidden'));
-    $('bottomNav').classList.toggle('hidden', ['test','edit','validation','testSetting'].includes(screen));
+    ['folderScreen','editScreen','validationScreen','testSettingScreen','testScreen','resultScreen','settingsScreen'].forEach(s => $(s).classList.add('hidden'));
+    $('bottomNav').classList.toggle('hidden', ['test','edit','validation','testSetting','result'].includes(screen));
     if (screen === 'folder') { $('headerTitle').innerText = "フォルダー"; renderFolderList(); updateWeakCount(); }
     if (screen === 'settings') { $('headerTitle').innerText = "設定"; loadVoices(); }
     $(screen + 'Screen').classList.remove('hidden');
@@ -524,14 +549,14 @@
     const weak = []; appData.folders.forEach(f => f.words.forEach(w => { if (w.weak) weak.push({ ...w, _folderLang: f.lang, _fid: f.id }); }));
     if (!weak.length) return alert("苦手な単語はありません！🎉");
     testConfig.direction = document.querySelector('input[name="testDirection"]:checked').value;
-    testQueue = weak.sort(() => Math.random() - .5); currentTestIndex = 0; showScreen('test'); showCard();
+    testQueue = weak.sort(() => Math.random() - .5); beginSession(testQueue.length); currentTestIndex = 0; showScreen('test'); showCard();
   }
 
   function startTest(count) {
     testConfig.direction = document.querySelector('input[name="testDirection"]:checked').value;
     const f = appData.folders.find(x => x.id === currentFolderId);
     testQueue = shuffle(pickQuestions(f, count)).map(w => ({ ...w, _folderLang: f.lang, _fid: f.id }));
-    saveData(); currentTestIndex = 0; showScreen('test'); showCard();
+    beginSession(testQueue.length); saveData(); currentTestIndex = 0; showScreen('test'); showCard();
   }
 
   // 文字数に応じてフォントサイズを調整（スマホで見切れない）
@@ -542,7 +567,7 @@
   }
 
   function showCard() {
-    if (currentTestIndex >= testQueue.length) { alert("テスト完了です！"); saveData(); showScreen('folder'); return; }
+    if (currentTestIndex >= testQueue.length) return showResult();
     const card = $('flashcard');
     // 次のカードは一瞬で切り替える（めくり戻しの途中で次の答えが透けないように）
     card.style.transition = 'none';
@@ -550,11 +575,10 @@
     void card.offsetWidth; card.style.transition = '';
     revealed = false;
     $('judgementBtns').classList.add('opacity-0', 'pointer-events-none'); $('judgementBtns').classList.remove('opacity-100');
-    $('ad-space').classList.add('hidden');
     const w = testQueue[currentTestIndex], fwd = testConfig.direction === 'forward';
     const f0 = appData.folders.find(x => x.id === w._fid), t0 = f0 && f0.words.find(x => x.id === w.id);
     if (t0) t0.r = f0.round || 1;                                  // この周で出題済みにする
-    $('progressText').innerText = `${currentTestIndex + 1} / ${testQueue.length}`;
+    $('progressText').innerText = `${retryRound ? '再テスト' + retryRound + '回目　' : ''}${currentTestIndex + 1} / ${testQueue.length}`;
     fit($('cardQ'), fwd ? w.q : w.a, true); fit($('cardA'), fwd ? w.a : w.q, false);
     speakCurrentWord(true);
     prefetchNext();
@@ -568,18 +592,55 @@
     if (!revealed) {
       revealed = true;
       $('judgementBtns').classList.remove('opacity-0', 'pointer-events-none'); $('judgementBtns').classList.add('opacity-100');
-      if (ADS_ENABLED) $('ad-space').classList.remove('hidden');
     }
   }
 
   function judgeWord(ok) {
     const card = $('flashcard'), cur = testQueue[currentTestIndex];
     if (!cur || card.classList.contains('swipe-left') || card.classList.contains('swipe-right')) return;
-    const f = appData.folders.find(x => x.id === cur._fid), t = f && f.words.find(w => w.id === cur.id);
-    if (t) { t.weak = !ok; t.known = ok; }   // わかる / わからない を記録
-    saveData();
+    if (retryRound === 0) {                      // 記録は1回目の答えだけ（再テストの正解では、リストから外れない）
+      const f = appData.folders.find(x => x.id === cur._fid), t = f && f.words.find(w => w.id === cur.id);
+      if (t) { t.weak = !ok; t.known = ok; }     // 「分からない」→ 分からない単語のリストに入る
+      if (ok) sessionFirst.correct++;
+      saveData();
+    }
+    if (!ok) roundWrong.push(cur);               // 間違えた問題は、あとで再テスト
     card.classList.add(ok ? 'swipe-right' : 'swipe-left');
     setTimeout(() => { currentTestIndex++; showCard(); }, 400);
+  }
+
+  // ===== 結果画面・再テスト（間違えた問題だけ、全部正解するまで）=====
+  function beginSession(n) { retryRound = 0; roundWrong = []; sessionFirst = { correct: 0, total: n }; }
+
+  function showResult() {
+    saveData();
+    const total = testQueue.length, wrong = roundWrong, correct = total - wrong.length;
+    $('resultTitle').textContent = retryRound === 0 ? 'テスト結果' : `再テスト ${retryRound}回目の結果`;
+    $('resultScore').textContent = `${correct} / ${total} 正解`;
+    $('resultPct').textContent = retryRound === 0
+      ? `正解率 ${total ? Math.round(correct / total * 100) : 0}%`
+      : `最初の回答は ${sessionFirst.correct} / ${sessionFirst.total} 正解でした`;
+    $('resultMsg').textContent = wrong.length
+      ? (retryRound === 0 ? `間違えた${wrong.length}問は「分からない単語」に入りました。全部正解するまで、再テストします。` : `あと${wrong.length}問。全部正解するまで続けます。`)
+      : (retryRound === 0 ? '全問正解！すごい🎉' : `全部正解できました！🎉 最初の回答は ${sessionFirst.correct} / ${sessionFirst.total} でした。`);
+    $('resultWrongBox').classList.toggle('hidden', !wrong.length);
+    $('resultWrongList').innerHTML = wrong.map(w => `<div class="p-2"><div class="font-bold break-words">${esc(w.q)}</div><div class="text-sm text-gray-500 break-words">${esc(w.a)}</div></div>`).join('');
+    $('resultNext').textContent = wrong.length ? `間違えた${wrong.length}問を再テスト` : 'フォルダーに戻る';
+    showScreen('result'); renderResultAd();
+  }
+  function resultNext() { if (roundWrong.length) startRetry(); else showScreen('folder'); }
+  function startRetry() {
+    testQueue = shuffle(roundWrong); roundWrong = []; retryRound++; currentTestIndex = 0;
+    showScreen('test'); showCard();
+  }
+
+  // 結果画面の広告（ADS_ENABLED が true で、広告ユニットIDが入っている時だけ表示）
+  function renderResultAd() {
+    const box = $('resultAd'); box.innerHTML = ''; box.classList.add('hidden');
+    if (!ADS_ENABLED || !AD_SLOT_RESULT) return;
+    box.innerHTML = `<div class="text-xs text-gray-400 text-center mb-1">広告</div><ins class="adsbygoogle" style="display:block" data-ad-client="${AD_CLIENT}" data-ad-slot="${AD_SLOT_RESULT}" data-ad-format="auto" data-full-width-responsive="true"></ins>`;
+    box.classList.remove('hidden');
+    try { (window.adsbygoogle = window.adsbygoogle || []).push({}); } catch (e) {}
   }
 
   function setupSwipe() {
